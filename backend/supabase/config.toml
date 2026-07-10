@@ -1,0 +1,18 @@
+# Supabase-Projektkonfiguration (Auszug). project_id durch deine Ref ersetzen.
+project_id = "ahdudpkosbzqmwignmzd"
+
+[functions.ingest]
+# Per Cron + Shared Secret geschützt -> keine JWT-Prüfung nötig.
+verify_jwt = false
+
+[functions.ai-query]
+# Wird vom Frontend mit eingeloggtem Nutzer-JWT aufgerufen.
+verify_jwt = true
+
+[functions.admin-settings]
+# Lokales Admin-Panel schreibt app_settings ohne SQL, geschützt über Shared Secret.
+verify_jwt = false
+
+[functions.enrich-mentions]
+# Läuft automatisch per Cron + Shared Secret, daher ohne JWT-Prüfung.
+verify_jwt = false
