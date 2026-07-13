@@ -1,6 +1,6 @@
 // Schaltet automatisch zwischen Demo-Daten und Supabase-Backend um.
 // Live-Modus aktiv, sobald VITE_SUPABASE_URL gesetzt ist.
-import { mockMentions, MOCK_COMP } from "./mock";
+import { mockMentions } from "./mock";
 
 const HAS_LIVE_CONFIG = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
 let backendReachable = HAS_LIVE_CONFIG;
@@ -87,13 +87,6 @@ export async function loadMentions(range = 90){
   }, () => mockMentions());
 }
 
-export async function loadCompetitors(range = 90){
-  return withLiveFallback(async () => {
-    const { supabaseComp } = await import("./supabase");
-    return supabaseComp(range);
-  }, () => MOCK_COMP);
-}
-
 export async function loadSourceHealth(range = 90){
   return withLiveFallback(async () => {
     const { supabaseSourceHealth } = await import("./supabase");
@@ -151,16 +144,23 @@ export async function aiChat(messages){
   });
 }
 
+export async function aiConversationHistory(sessionId, limit = 20){
+  return runLiveOnly(async () => {
+    const { ragConversationHistory } = await import("./supabase");
+    return ragConversationHistory(sessionId, limit);
+  });
+}
+
+export async function aiConversationMessages(sessionId, conversationId, limit = 120){
+  return runLiveOnly(async () => {
+    const { ragConversationMessages } = await import("./supabase");
+    return ragConversationMessages(sessionId, conversationId, limit);
+  });
+}
+
 export async function aiRecommendations(summary){
   return runLiveOnly(async () => {
     const { ragRecommendations } = await import("./supabase");
     return ragRecommendations(summary);
-  });
-}
-
-export async function aiCommercialActions(summary){
-  return runLiveOnly(async () => {
-    const { ragCommercialActions } = await import("./supabase");
-    return ragCommercialActions(summary);
   });
 }

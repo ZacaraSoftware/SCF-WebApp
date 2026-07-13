@@ -36,14 +36,30 @@ export async function supabaseMentions(rangeDays = 60){
   const endExclusiveIso = new Date().toISOString();
   const since = new Date(Date.now() - rangeDays * DAYMS).toISOString();
   const rowLimit = maxRowsForRange(rangeDays);
-  const { data, error } = await client()
+  const queryWithFlavor = client()
     .from("mentions")
-    .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status")
+    .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status, primary_flavor, flavor_tags, flavor_confidence")
     .gte("published_at", since)
     .lt("published_at", endExclusiveIso)
     .eq("enrichment_status", "done")
     .order("published_at", { ascending: false })
     .limit(rowLimit);
+
+  let data;
+  let error;
+  ({ data, error } = await queryWithFlavor);
+
+  // Backward compatibility while migrations are rolling out.
+  if (error?.code === "42703" && String(error?.message ?? "").includes("primary_flavor")) {
+    ({ data, error } = await client()
+      .from("mentions")
+      .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status")
+      .gte("published_at", since)
+      .lt("published_at", endExclusiveIso)
+      .eq("enrichment_status", "done")
+      .order("published_at", { ascending: false })
+      .limit(rowLimit));
+  }
   if (error) throw error;
   return (data ?? []).map((m) => {
     const d = new Date(m.published_at);
@@ -58,213 +74,45 @@ export async function supabaseMentions(rangeDays = 60){
       publicSentimentLabel: m.public_sentiment_label ?? m.sentiment_label ?? "neutral",
       impactReason: m.impact_reason ?? "unknown",
       b2b: m.is_b2b,
+      primaryFlavor: String(m.primary_flavor ?? "none").trim().toLowerCase() || "none",
+      flavorTags: Array.isArray(m.flavor_tags)
+        ? m.flavor_tags.map((tag) => String(tag ?? "").trim().toLowerCase()).filter(Boolean)
+        : [],
+      flavorConfidence: Number(m.flavor_confidence ?? 0),
     };
   });
 }
 
-const COMP_PALETTE = ["#004b93", "#8a6d3b", "#6d5ce7", "#16a37b", "#0a6cd4", "#a35f00"];
-
-function toId(name){
-  return name
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "") || "competitor";
-}
-
-function colorFor(name){
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  return COMP_PALETTE[Math.abs(hash) % COMP_PALETTE.length];
-}
-
-function normalizeForMatch(input){
-  return ` ${String(input ?? "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim()} `;
-}
-
-function weekStartUTC(isoDate){
-  const date = new Date(isoDate);
-  date.setUTCHours(0, 0, 0, 0);
-  const day = date.getUTCDay();
-  const diffToMonday = (day + 6) % 7;
-  date.setUTCDate(date.getUTCDate() - diffToMonday);
-  return date.toISOString().slice(0, 10);
-}
-
-function isoWeekLabel(weekStartDate){
-  const date = new Date(`${weekStartDate}T00:00:00Z`);
-  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  d.setUTCDate(d.getUTCDate() + 3 - ((d.getUTCDay() + 6) % 7));
-  const week1 = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
-  const weekNo = 1 + Math.round(((d.getTime() - week1.getTime()) / 86400000 - 3 + ((week1.getUTCDay() + 6) % 7)) / 7);
-  return `KW${String(weekNo).padStart(2, "0")}`;
-}
-
-function mentionCompetitors(content, profiles){
-  const normalized = normalizeForMatch(content);
-  const contextTerms = ["zucker", "sugar", "rube", "beet", "softdrink", "suess", "suss", "sirup", "syrup"];
-  const hasContext = contextTerms.some((term) => normalized.includes(` ${term} `));
-  const hits = [];
-  for (const profile of profiles){
-    const aliases = Array.isArray(profile.aliases) && profile.aliases.length > 0
-      ? profile.aliases
-      : [profile.name];
-    const found = aliases.some((alias) => normalized.includes(` ${normalizeForMatch(alias).trim()} `));
-    if (!found) continue;
-    if (profile.require_context && !hasContext) continue;
-    hits.push(profile.name);
-  }
-  return hits;
-}
-
-function looksIncomplete(rows){
-  if (!rows || rows.length === 0) return true;
-  const weeks = [...new Set(rows.map((r) => r.week))].sort();
-  const latestWeek = weeks[weeks.length - 1];
-  const latestRows = rows.filter((r) => r.week === latestWeek);
-  const active = latestRows.filter((r) => Number(r.share_of_voice ?? 0) > 0.01).length;
-  return active <= 1;
-}
-
-function computeRowsFromMentions(mentions, profiles){
-  const byWeek = new Map();
-
-  for (const row of mentions ?? []){
-    const matched = mentionCompetitors(row.content ?? "", profiles);
-    if (matched.length === 0) continue;
-
-    const week = weekStartUTC(row.published_at);
-    const bucket = byWeek.get(week) ?? {
-      total: 0,
-      byCompetitor: Object.fromEntries(profiles.map((p) => [p.name, { count: 0, sumSent: 0 }])),
-    };
-
-    for (const comp of matched){
-      bucket.total += 1;
-      const slot = bucket.byCompetitor[comp];
-      slot.count += 1;
-      slot.sumSent += Number(row.public_sentiment ?? row.sentiment ?? 0);
-    }
-
-    byWeek.set(week, bucket);
-  }
-
-  return Array.from(byWeek.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .flatMap(([week, bucket]) => profiles.map((profile) => {
-      const slot = bucket.byCompetitor[profile.name] ?? { count: 0, sumSent: 0 };
-      const netSent = slot.count > 0 ? Math.round((slot.sumSent / slot.count) * 100) : 0;
-      const sov = bucket.total > 0 ? +((slot.count / bucket.total) * 100).toFixed(2) : 0;
-      return {
-        competitor: profile.name,
-        week,
-        net_sentiment: netSent,
-        share_of_voice: sov,
-      };
-    }));
-}
-
-export async function supabaseComp(rangeDays = 90){
-  const safeRange = Math.max(14, Number(rangeDays) || 90);
-  const endExclusiveIso = new Date().toISOString();
-  const sinceIso = new Date(Date.now() - safeRange * DAYMS).toISOString();
-  const [{ data: metrics }, { data: profiles }, { data: mentions }] = await Promise.all([
-    client()
-      .from("competitor_metrics")
-      .select("competitor, week, net_sentiment, share_of_voice")
-      .gte("week", sinceIso.slice(0, 10))
-      .order("week", { ascending: true }),
-    client()
-      .from("competitor_profiles")
-      .select("name, aliases, require_context, color")
-      .eq("active", true)
-      .order("name", { ascending: true }),
-    client()
-      .from("mentions")
-      .select("content, public_sentiment, sentiment, published_at")
-      .eq("enrichment_status", "done")
-      .gte("published_at", sinceIso)
-      .lt("published_at", endExclusiveIso)
-      .order("published_at", { ascending: false })
-      .limit(8000),
-  ]);
-
-  const profileRows = profiles ?? [];
-  let rows = metrics ?? [];
-  if (profileRows.length > 0 && looksIncomplete(rows)) {
-    rows = computeRowsFromMentions(mentions ?? [], profileRows);
-  }
-
-  const profileColor = Object.fromEntries((profiles ?? []).map((p) => [p.name, p.color]).filter(([, c]) => !!c));
-  const competitorNames = profileRows.length > 0
-    ? profileRows.map((p) => p.name)
-    : [...new Set(rows.map((r) => r.competitor))];
-
-  if (competitorNames.length === 0) return { names: [], series: [] };
-
-  const byWeekAndComp = new Map(rows.map((r) => [`${r.week}|${r.competitor}`, r]));
-  const weeks = [...new Set(rows.map(r => r.week))].sort();
-  const recentWeeks = weeks.slice(-6);
-
-  const sovRawByCompetitor = Object.fromEntries(competitorNames.map((name) => [name, 0]));
-  for (const name of competitorNames) {
-    const values = recentWeeks.map((week) => {
-      const hit = byWeekAndComp.get(`${week}|${name}`);
-      return Number(hit?.share_of_voice ?? 0);
-    });
-    const avg = values.length > 0
-      ? values.reduce((sum, value) => sum + value, 0) / values.length
-      : 0;
-    sovRawByCompetitor[name] = avg;
-  }
-
-  const sovTotal = competitorNames.reduce((sum, name) => sum + sovRawByCompetitor[name], 0);
-
-  const names = competitorNames.map((name) => ({
-    id: toId(name),
-    name,
-    color: profileColor[name] ?? colorFor(name),
-    sov: sovTotal > 0 ? +((sovRawByCompetitor[name] / sovTotal) * 100).toFixed(2) : 0,
-  }));
-
-  const series = weeks.map((w) => {
-    const row = { week: isoWeekLabel(w) };
-    names.forEach((n) => {
-      const hit = byWeekAndComp.get(`${w}|${n.name}`);
-      row[n.id] = hit ? hit.net_sentiment : 0;
-      row[`${n.id}__sov`] = hit ? Number(hit.share_of_voice ?? 0) : 0;
-    });
-    return row;
-  });
-  return { names, series };
-}
-
-export async function ragChat(messages){
+export async function ragChat(payload){
+  const body = Array.isArray(payload)
+    ? { mode: "chat", messages: payload }
+    : { mode: "chat", ...(payload ?? {}) };
   const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "chat", messages },
-  });
-  if (error) throw error;
-  return data.answer;
-}
-
-export async function ragRecommendations(summary){
-  const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "recommendations", summary },
+    body,
   });
   if (error) throw error;
   return data;
 }
 
-export async function ragCommercialActions(summary){
+export async function ragConversationHistory(sessionId, limit = 20){
   const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "commercial_actions", summary },
+    body: { mode: "history_list", session_id: sessionId, limit },
+  });
+  if (error) throw error;
+  return data?.conversations ?? [];
+}
+
+export async function ragConversationMessages(sessionId, conversationId, limit = 120){
+  const { data, error } = await client().functions.invoke("ai-query", {
+    body: { mode: "history_get", session_id: sessionId, conversation_id: conversationId, limit },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function ragRecommendations(summary){
+  const { data, error } = await client().functions.invoke("ai-query", {
+    body: { mode: "recommendations", summary },
   });
   if (error) throw error;
   return data;

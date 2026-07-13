@@ -22,12 +22,6 @@ const QUERIES = [
   "kuchen",
   "backen",
   "gebäck",
-  "nordzucker",
-  "südzucker",
-  "suedzucker",
-  "pfeifer langen",
-  "pfeifer und langen",
-  "cosun beet",
   "einkochen",
   "einmachen",
   "marmelade",
@@ -86,12 +80,6 @@ const KEYWORD_PATTERNS = [
   /\bgartensaison\b/i,
   /\bobsternte\b/i,
   /\bnordzucker\b/i,
-  /\bsüdzucker\b/i,
-  /\bsuedzucker\b/i,
-  /\bpfeifer\b/i,
-  /\blangen\b/i,
-  /\bcosun\b/i,
-  /\bbeet\b/i,
 ];
 
 const YOUTUBE_TERMS = [
@@ -109,10 +97,6 @@ const YOUTUBE_TERMS = [
   "softdrink",
   "diabetes",
   "nordzucker",
-  "südzucker",
-  "suedzucker",
-  "pfeifer langen",
-  "cosun beet",
   "einkochen",
   "marmelade",
   "gelierzucker",
@@ -122,8 +106,6 @@ const YOUTUBE_TERMS = [
 
 const ALWAYS_INCLUDE_YOUTUBE_TERMS = [
   "nordzucker",
-  "suedzucker",
-  "südzucker",
   "einkochen",
   "marmelade",
 ];
@@ -147,41 +129,12 @@ const HIGH_VALUE_TERMS = new Set([
   "sugarfree",
   "softdrink",
   "nordzucker",
-  "südzucker",
-  "suedzucker",
-  "pfeifer langen",
-  "cosun beet",
   "einkochen",
   "marmelade",
   "gelierzucker",
   "einmachzucker",
   "gartensaison",
-  "nordzucker",
-  "südzucker",
-  "suedzucker",
-  "pfeifer langen",
-  "cosun beet",
 ]);
-const COMPETITOR_CONTEXT_TERMS = [
-  "zucker",
-  "sugar",
-  "rübe",
-  "ruebe",
-  "süß",
-  "suess",
-  "syrup",
-  "sirup",
-  "lebensmittel",
-];
-
-type CompetitorProfile = {
-  name: string;
-  aliases: string[];
-  query_hints: string[];
-  require_context: boolean;
-};
-
-let activeCompetitorProfiles: CompetitorProfile[] = [];
 
 type RunInsights = {
   topTerms: Array<{ term: string; count: number }>;
@@ -194,24 +147,6 @@ type Raw = {
   author: string | null;
   content: string;
   url: string | null;
-  published_at: string;
-};
-
-type TwitterRawRow = {
-  tweet_id: string;
-  query_used: string;
-  competitor: string;
-  author_id: string | null;
-  author_username: string | null;
-  content: string;
-  lang: string | null;
-  retweet_count: number | null;
-  reply_count: number | null;
-  like_count: number | null;
-  quote_count: number | null;
-  bookmark_count: number | null;
-  impression_count: number | null;
-  url: string;
   published_at: string;
 };
 
@@ -270,26 +205,6 @@ type YoutubeTermStat = {
 };
 
 let lastYoutubeRunDebug: YoutubeRunDebug | null = null;
-
-async function loadCompetitorProfiles(db: ReturnType<typeof serviceClient>): Promise<CompetitorProfile[]> {
-  const { data, error } = await db
-    .from("competitor_profiles")
-    .select("name, aliases, query_hints, require_context")
-    .eq("active", true)
-    .order("name", { ascending: true });
-
-  if (error) {
-    console.error("load competitor profiles failed:", error.message);
-    return [];
-  }
-
-  return (data ?? []).map((row: any) => ({
-    name: row.name,
-    aliases: Array.isArray(row.aliases) ? row.aliases : [],
-    query_hints: Array.isArray(row.query_hints) ? row.query_hints : [],
-    require_context: !!row.require_context,
-  }));
-}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: number | undefined;
@@ -436,11 +351,6 @@ function pickRotatingTerms(pool: string[], count: number): string[] {
   return out;
 }
 
-function buildCompetitorTerms(profiles: CompetitorProfile[]): string[] {
-  const terms = profiles.flatMap((p) => p.query_hints?.length ? p.query_hints : p.aliases.slice(0, 1));
-  return Array.from(new Set(terms.map(normalizeYoutubeTerm).filter(Boolean)));
-}
-
 function normalizeYoutubeTerm(term: string): string {
   return String(term ?? "")
     .trim()
@@ -458,8 +368,7 @@ function stableHash(input: string): number {
 }
 
 function buildYoutubeTermPool(): string[] {
-  const competitor = buildCompetitorTerms(activeCompetitorProfiles);
-  const ordered = [...YOUTUBE_TERMS, ...ALWAYS_INCLUDE_YOUTUBE_TERMS, ...competitor]
+  const ordered = [...YOUTUBE_TERMS, ...ALWAYS_INCLUDE_YOUTUBE_TERMS]
     .map(normalizeYoutubeTerm)
     .filter(Boolean);
 
@@ -556,108 +465,6 @@ async function persistYoutubeTermStats(searchHitsByTerm: Record<string, number>)
 
 function escapeRegex(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function normalizeForMatch(input: string): string {
-  return ` ${input
-    .toLowerCase()
-    .replace(/[^a-z0-9äöüß]+/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim()} `;
-}
-
-function mentionCompetitors(content: string, profiles: CompetitorProfile[]): string[] {
-  const normalized = normalizeForMatch(content);
-  const matched: string[] = [];
-  const hasContext = COMPETITOR_CONTEXT_TERMS.some((term) => normalized.includes(` ${term} `));
-  for (const competitor of profiles) {
-    const hit = competitor.aliases.some((alias) => normalized.includes(` ${normalizeForMatch(alias).trim()} `));
-    if (competitor.require_context && hit && !hasContext) {
-      continue;
-    }
-    if (hit) matched.push(competitor.name);
-  }
-  return matched;
-}
-
-function weekStartUTC(input: string): string {
-  const date = new Date(input);
-  date.setUTCHours(0, 0, 0, 0);
-  const day = date.getUTCDay();
-  const diffToMonday = (day + 6) % 7;
-  date.setUTCDate(date.getUTCDate() - diffToMonday);
-  return date.toISOString().slice(0, 10);
-}
-
-async function updateCompetitorMetrics(
-  db: ReturnType<typeof serviceClient>,
-  profiles: CompetitorProfile[],
-): Promise<{ weeks: number; rows: number }> {
-  if (profiles.length === 0) return { weeks: 0, rows: 0 };
-  const sinceIso = new Date(Date.now() - 84 * 86400000).toISOString();
-  const sinceDate = sinceIso.slice(0, 10);
-  const { data, error } = await db
-    .from("mentions")
-    .select("content, public_sentiment, sentiment, published_at")
-    .eq("enrichment_status", "done")
-    .gte("published_at", sinceIso)
-    .order("published_at", { ascending: false })
-    .limit(8000);
-
-  if (error) throw new Error(`competitor metrics source read failed: ${error.message}`);
-
-  type WeekBucket = {
-    total: number;
-    byCompetitor: Record<string, { count: number; sumSent: number }>;
-  };
-
-  const byWeek = new Map<string, WeekBucket>();
-  for (const row of data ?? []) {
-    const matched = mentionCompetitors(row.content ?? "", profiles);
-    if (matched.length === 0) continue;
-    const week = weekStartUTC(row.published_at);
-    const bucket = byWeek.get(week) ?? {
-      total: 0,
-      byCompetitor: Object.fromEntries(profiles.map((c) => [c.name, { count: 0, sumSent: 0 }])),
-    };
-
-    for (const comp of matched) {
-      bucket.total += 1;
-      const slot = bucket.byCompetitor[comp];
-      slot.count += 1;
-      slot.sumSent += Number(row.public_sentiment ?? row.sentiment ?? 0);
-    }
-    byWeek.set(week, bucket);
-  }
-
-  const { error: clearError } = await db
-    .from("competitor_metrics")
-    .delete()
-    .gte("week", sinceDate);
-  if (clearError) throw new Error(`competitor metrics cleanup failed: ${clearError.message}`);
-
-  if (byWeek.size === 0) return { weeks: 0, rows: 0 };
-
-  const rows = Array.from(byWeek.entries()).flatMap(([week, bucket]) => {
-    return profiles.map((competitor) => {
-      const slot = bucket.byCompetitor[competitor.name] ?? { count: 0, sumSent: 0 };
-      const netSentiment = slot.count > 0 ? Math.round((slot.sumSent / slot.count) * 100) : 0;
-      const shareOfVoice = bucket.total > 0 ? +((slot.count / bucket.total) * 100).toFixed(2) : 0;
-      return {
-        competitor: competitor.name,
-        week,
-        net_sentiment: netSentiment,
-        share_of_voice: shareOfVoice,
-      };
-    });
-  });
-
-  const { error: upsertError } = await db
-    .from("competitor_metrics")
-    .upsert(rows, { onConflict: "competitor,week" });
-  if (upsertError) throw new Error(`competitor metrics upsert failed: ${upsertError.message}`);
-
-  return { weeks: byWeek.size, rows: rows.length };
 }
 
 function computeSignal(content: string): { score: number; matchedTerms: string[] } {
@@ -768,34 +575,6 @@ async function news(): Promise<Raw[]> {
     url: a.url,
     published_at: a.publishedAt,
   })).filter((r: Raw) => r.content));
-
-  const competitorQueries = activeCompetitorProfiles.map((profile) => {
-    const base = profile.query_hints?.[0] || profile.aliases?.[0] || profile.name;
-    const query = profile.require_context
-      ? `${base} AND (zucker OR sugar OR rübe OR ruebe)`
-      : base;
-    return { tag: base, query };
-  });
-
-  for (const item of competitorQueries) {
-    try {
-      const q = encodeURIComponent(item.query);
-      const res = await fetch(
-        `https://newsapi.org/v2/everything?q=${q}&language=de&sortBy=publishedAt&pageSize=4&apiKey=${key}`,
-      ).then((r) => r.json());
-
-      out.push(...(res?.articles ?? []).map((a: any): Raw => ({
-        source: "news",
-        external_id: a.url,
-        author: a.source?.name ?? null,
-        content: `${item.tag} ${a.title ?? ""} ${a.description ?? ""}`.trim().slice(0, 2000),
-        url: a.url,
-        published_at: a.publishedAt,
-      })).filter((r: Raw) => r.content));
-    } catch (e) {
-      console.warn(`news competitor term skipped for '${item.tag}':`, String((e as Error)?.message ?? e));
-    }
-  }
 
   return out;
 }
@@ -1082,145 +861,7 @@ async function facebookInstagram(): Promise<Raw[]> {
   return out;
 }
 
-function buildXCompetitorQuery(profile: CompetitorProfile): string {
-  const aliasPool = Array.from(new Set([
-    profile.name,
-    ...(profile.aliases ?? []),
-    ...(profile.query_hints ?? []),
-  ].map((value) => String(value ?? "").trim()).filter(Boolean)));
-
-  const aliasExpr = aliasPool.length > 0
-    ? `(${aliasPool.map((alias) => `"${alias.replaceAll('"', "")}"`).join(" OR ")})`
-    : `"${profile.name.replaceAll('"', "")}"`;
-
-  const contextExpr = "(zucker OR sugar OR ruebe OR rübe OR beet OR softdrink OR suess OR süß)";
-  return `${aliasExpr} ${contextExpr} -is:retweet`;
-}
-
-async function twitterX(): Promise<Raw[]> {
-  const bearer = Deno.env.get("X_BEARER_TOKEN") ?? Deno.env.get("TWITTER_BEARER_TOKEN");
-  if (!bearer) return [];
-
-  const profiles = activeCompetitorProfiles.length > 0
-    ? activeCompetitorProfiles
-    : [
-      { name: "Nordzucker", aliases: ["nordzucker"], query_hints: ["nordzucker"], require_context: false },
-      { name: "Südzucker", aliases: ["suedzucker", "südzucker"], query_hints: ["suedzucker"], require_context: false },
-      {
-        name: "Pfeifer & Langen",
-        aliases: ["pfeifer langen", "pfeifer und langen"],
-        query_hints: ["pfeifer langen"],
-        require_context: true,
-      },
-      { name: "Cosun Beet", aliases: ["cosun beet", "cosun"], query_hints: ["cosun beet"], require_context: true },
-    ];
-
-  const out: Raw[] = [];
-  const rawRows: TwitterRawRow[] = [];
-  const seen = new Set<string>();
-  const maxResults = Math.max(10, Math.min(100, Number(Deno.env.get("X_MAX_RESULTS") ?? 25)));
-
-  for (const profile of profiles) {
-    const query = buildXCompetitorQuery(profile);
-    const params = new URLSearchParams({
-      query,
-      max_results: String(maxResults),
-      expansions: "author_id",
-      "tweet.fields": "created_at,author_id,lang,public_metrics",
-      "user.fields": "username,name",
-    });
-
-    const response = await fetch(`https://api.twitter.com/2/tweets/search/recent?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${bearer}`,
-      },
-    });
-
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = payload?.detail ?? payload?.title ?? `HTTP ${response.status}`;
-      throw new Error(`x api search failed for ${profile.name}: ${detail}`);
-    }
-
-    const tweets: any[] = Array.isArray(payload?.data) ? payload.data : [];
-    const usersById = new Map<string, any>(
-      (payload?.includes?.users ?? []).map((user: any) => [String(user.id), user]),
-    );
-
-    for (const tweet of tweets) {
-      const tweetId = String(tweet?.id ?? "").trim();
-      if (!tweetId || seen.has(tweetId)) continue;
-      seen.add(tweetId);
-
-      const text = String(tweet?.text ?? "").trim();
-      if (!text) continue;
-
-      const authorId = tweet?.author_id ? String(tweet.author_id) : null;
-      const user = authorId ? usersById.get(authorId) : null;
-      const username = user?.username ? String(user.username) : null;
-      const url = username
-        ? `https://x.com/${username}/status/${tweetId}`
-        : `https://x.com/i/web/status/${tweetId}`;
-
-      const publishedAt = parseSourceTimestamp(tweet?.created_at);
-      if (!publishedAt) continue;
-
-      out.push({
-        source: "twitter",
-        external_id: tweetId,
-        author: username,
-        content: text.slice(0, 2000),
-        url,
-        published_at: publishedAt,
-      });
-
-      rawRows.push({
-        tweet_id: tweetId,
-        query_used: query,
-        competitor: profile.name,
-        author_id: authorId,
-        author_username: username,
-        content: text.slice(0, 2000),
-        lang: tweet?.lang ? String(tweet.lang) : null,
-        retweet_count: Number.isFinite(tweet?.public_metrics?.retweet_count)
-          ? Number(tweet.public_metrics.retweet_count)
-          : null,
-        reply_count: Number.isFinite(tweet?.public_metrics?.reply_count)
-          ? Number(tweet.public_metrics.reply_count)
-          : null,
-        like_count: Number.isFinite(tweet?.public_metrics?.like_count)
-          ? Number(tweet.public_metrics.like_count)
-          : null,
-        quote_count: Number.isFinite(tweet?.public_metrics?.quote_count)
-          ? Number(tweet.public_metrics.quote_count)
-          : null,
-        bookmark_count: Number.isFinite(tweet?.public_metrics?.bookmark_count)
-          ? Number(tweet.public_metrics.bookmark_count)
-          : null,
-        impression_count: Number.isFinite(tweet?.public_metrics?.impression_count)
-          ? Number(tweet.public_metrics.impression_count)
-          : null,
-        url,
-        published_at: publishedAt,
-      });
-    }
-  }
-
-  if (rawRows.length > 0) {
-    const db = serviceClient();
-    const { error } = await db
-      .from("twitter_mentions_raw")
-      .upsert(rawRows, { onConflict: "tweet_id" });
-    if (error) {
-      console.warn("twitter raw upsert failed:", error.message);
-    }
-  }
-
-  return out;
-}
-
 const ADAPTERS: AdapterConfig[] = [
-  { name: "twitter_x", requiredEnv: ["X_BEARER_TOKEN|TWITTER_BEARER_TOKEN"], run: twitterX },
   { name: "reddit", requiredEnv: ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"], run: reddit },
   { name: "news", requiredEnv: ["NEWSAPI_KEY"], run: news },
   { name: "youtube", requiredEnv: ["YOUTUBE_API_KEY"], run: youtube },
@@ -1245,7 +886,6 @@ Deno.serve(async (req) => {
     }
 
     const db = serviceClient();
-    activeCompetitorProfiles = await loadCompetitorProfiles(db);
     const collected: Raw[] = [];
     const perSource: Record<string, number> = {};
     const adapterDiagnostics: AdapterDiag[] = [];
@@ -1390,21 +1030,6 @@ Deno.serve(async (req) => {
       await db.from("sources").update({ last_sync: new Date().toISOString() }).eq("id", src);
     }
 
-    let competitorMetrics = {
-      weeks: 0,
-      rows: 0,
-      profiles: activeCompetitorProfiles.length,
-      error: undefined as string | undefined,
-    };
-    try {
-      const computed = await updateCompetitorMetrics(db, activeCompetitorProfiles);
-      competitorMetrics = { ...computed, profiles: activeCompetitorProfiles.length, error: undefined };
-    } catch (e) {
-      const msg = String((e as Error)?.message ?? e);
-      console.error("competitor metrics update failed:", msg);
-      competitorMetrics = { weeks: 0, rows: 0, profiles: activeCompetitorProfiles.length, error: msg };
-    }
-
     return json({
       ingested,
       perSource,
@@ -1418,7 +1043,6 @@ Deno.serve(async (req) => {
         },
       },
       runInsights,
-      competitorMetrics,
       enrichmentQueued: rows.length,
       upsertErrors: upsertErrors.slice(0, 5),
       adapterDiagnostics,

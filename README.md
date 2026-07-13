@@ -3,7 +3,7 @@
 KI-gestützte Plattform zur Analyse der öffentlichen Stimmung gegenüber Zucker, Süßgetränken
 und süßen Speisen. Aggregiert öffentliches Feedback (Reddit, YouTube, News), wertet es per
 Sentiment-Analyse aus, erkennt Trends und Risiken (z. B. B2B-Exposure im Softdrink-Segment),
-vergleicht mit Wettbewerbern und liefert KI-Empfehlungen und -Prognosen.
+und liefert KI-Empfehlungen und -Prognosen.
 
 ```
 nordzucker-scf/
@@ -20,7 +20,7 @@ npm run dev          # http://localhost:5173
 ```
 
 Die App startet mit deterministischen Beispieldaten — alle Ansichten (Dashboard, Trends,
-Wettbewerb, Datenquellen) funktionieren. Die KI-Ansichten zeigen einen Hinweis, bis das
+Datenquellen) funktionieren. Die KI-Ansichten zeigen einen Hinweis, bis das
 Backend verbunden ist.
 
 ## Live-Modus (mit Supabase)

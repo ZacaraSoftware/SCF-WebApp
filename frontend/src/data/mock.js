@@ -41,6 +41,38 @@ const SNIPPETS = {
 const AUTHORS = ["@food_lab","@maja_kocht","Norddeutsche Z.","@fitmitlena","@sugar_skeptic","Verbrauchermag.","@papa_backt","@health_now","@summer_drinks","@bjoern_ernaehrt","Wirtschaftswoche","@clean_eating_de"];
 const MIN_DEMO_MENTIONS = 237;
 
+const FLAVOR_HINTS = [
+  { id: "limette", rx: /\blimette\b|\blime\b/i },
+  { id: "zitrone", rx: /\bzitrone\b|\blemon\b/i },
+  { id: "orange", rx: /\borange\b/i },
+  { id: "cola", rx: /\bcola\b/i },
+  { id: "vanille", rx: /\bvanille\b|\bvanilla\b/i },
+  { id: "erdbeere", rx: /\berdbeere\b|\bstrawberry\b/i },
+  { id: "kirsche", rx: /\bkirsche\b|\bcherry\b/i },
+  { id: "himbeere", rx: /\bhimbeere\b|\braspberry\b/i },
+  { id: "apfel", rx: /\bapfel\b|\bapple\b/i },
+  { id: "mango", rx: /\bmango\b/i },
+];
+
+function inferFlavor(text, topicId, rng){
+  const body = String(text ?? "").toLowerCase();
+  const fromText = FLAVOR_HINTS.filter((entry) => entry.rx.test(body)).map((entry) => entry.id);
+  if (fromText.length > 0) {
+    return {
+      primaryFlavor: fromText[0],
+      flavorTags: fromText.slice(0, 3),
+      flavorConfidence: 0.92,
+    };
+  }
+  if (topicId === "saisonal" && rng() < 0.45) {
+    return { primaryFlavor: "limette", flavorTags: ["limette", "zitrone"], flavorConfidence: 0.78 };
+  }
+  if (topicId === "softdrinks" && rng() < 0.4) {
+    return { primaryFlavor: "cola", flavorTags: ["cola"], flavorConfidence: 0.8 };
+  }
+  return { primaryFlavor: "none", flavorTags: [], flavorConfidence: 0.2 };
+}
+
 export function mockMentions(){
   const rng = mulberry32(20260611);
   const out = []; let id = 1;
@@ -62,14 +94,19 @@ export function mockMentions(){
       }
       sent = Math.max(-1, Math.min(1, sent));
       const pool = SNIPPETS[topic.id];
+      const snippet = pool[Math.floor(rng()*pool.length)];
+      const flavor = inferFlavor(snippet, topic.id, rng);
       out.push({
         id: id++, source: src, author: AUTHORS[Math.floor(rng()*AUTHORS.length)],
-        date: day, ts: day.getTime(), text: pool[Math.floor(rng()*pool.length)],
+        date: day, ts: day.getTime(), text: snippet,
         topic: topic.id, topicLabel: topic.label, sentiment: +sent.toFixed(2), b2b,
         sentimentLabel: sent > 0.15 ? "positiv" : sent < -0.15 ? "negativ" : "neutral",
         publicSentiment: +sent.toFixed(2),
         publicSentimentLabel: sent > 0.15 ? "positiv" : sent < -0.15 ? "negativ" : "neutral",
         impactReason: b2b ? "b2b_opportunity" : "neutral_context",
+        primaryFlavor: flavor.primaryFlavor,
+        flavorTags: flavor.flavorTags,
+        flavorConfidence: flavor.flavorConfidence,
       });
     }
   }
@@ -79,13 +116,15 @@ export function mockMentions(){
       const topic = TOPICS[Math.floor(rng() * TOPICS.length)];
       const sent = Math.max(-1, Math.min(1, topic.lean + (rng() - 0.5) * 0.8));
       const pool = SNIPPETS[topic.id];
+      const snippet = pool[Math.floor(rng() * pool.length)];
+      const flavor = inferFlavor(snippet, topic.id, rng);
       out.push({
         id: id++,
         source: SOURCES[Math.floor(rng() * SOURCES.length)].id,
         author: AUTHORS[Math.floor(rng() * AUTHORS.length)],
         date: newest,
         ts: newest.getTime(),
-        text: pool[Math.floor(rng() * pool.length)],
+        text: snippet,
         topic: topic.id,
         topicLabel: topic.label,
         sentiment: +sent.toFixed(2),
@@ -94,34 +133,20 @@ export function mockMentions(){
         publicSentiment: +sent.toFixed(2),
         publicSentimentLabel: sent > 0.15 ? "positiv" : sent < -0.15 ? "negativ" : "neutral",
         impactReason: "neutral_context",
+        primaryFlavor: flavor.primaryFlavor,
+        flavorTags: flavor.flavorTags,
+        flavorConfidence: flavor.flavorConfidence,
       });
     }
   }
   return out.sort((a,b) => b.ts - a.ts);
 }
 
-export const MOCK_COMP = (() => {
-  const rng = mulberry32(7);
-  const names = [
-    { id:"nordzucker", name:"Nordzucker", base: 6, sov: 31, color:"#004b93" },
-    { id:"suedzucker", name:"Südzucker", base: 2, sov: 38, color:"#8a6d3b" },
-    { id:"pfeifer",    name:"Pfeifer & Langen", base: 9, sov: 18, color:"#6d5ce7" },
-    { id:"cosun",      name:"Cosun Beet", base: 4, sov: 13, color:"#16a37b" },
-  ];
-  const series = [];
-  for (let w = 11; w >= 0; w--){
-    const row = { week: `KW${22 - w}` };
-    names.forEach(n => { row[n.id] = Math.round(n.base + (rng()-0.5)*14); });
-    series.push(row);
-  }
-  return { names, series };
-})();
-
 // Anzeige-Metadaten für die Ansicht „Datenquellen“.
 export const SOURCE_INFO = [
   { id:"twitter", label:"X API v2", status:"active", auth:"Bearer Token",
     endpoint:"https://api.twitter.com/2/tweets/search/recent",
-    note:"Keyword-basierte Tweet-Suche inkl. Public Metrics (Likes, Replies, Retweets) fur Trend- und Wettbewerbsmonitoring." },
+    note:"Keyword-basierte Tweet-Suche inkl. Public Metrics (Likes, Replies, Retweets). Derzeit nicht in der aktiven Ingestion genutzt." },
   { id:"reddit", label:"Reddit API", status:"active", auth:"OAuth2 (script app)",
     endpoint:"https://oauth.reddit.com/r/{sub}/search",
     note:"Subreddits: r/de, r/Ernaehrung, r/Finanzen. Volltext-Kommentare, kostenlos für nicht-kommerzielle Nutzung." },
@@ -130,7 +155,7 @@ export const SOURCE_INFO = [
     note:"Kommentare unter Videos zu Zucker/Softdrinks. Quota-basiert, sehr ergiebig für Sentiment." },
   { id:"news", label:"NewsAPI / GDELT", status:"active", auth:"API-Key",
     endpoint:"https://newsapi.org/v2/everything",
-    note:"Presseartikel zu Zuckermarkt, Preisen, Politik. Ergänzt das Wettbewerbs-Benchmarking." },
+    note:"Presseartikel zu Zuckermarkt, Preisen und Politik als Kontext für Trend- und Risikoanalyse." },
   { id:"instagram", label:"Instagram Graph API", status:"review", auth:"Business-Account + App-Review",
     endpoint:"https://graph.facebook.com/v22.0/ig_hashtag_search",
     note:"Nur Hashtag-Suche (max. 30 Hashtags/Woche). Erfordert Business-Account + Meta App-Review (~60 Tage). Basic Display API seit 12/2024 abgeschaltet." },

@@ -71,6 +71,9 @@ export type Analysis = {
   topic: string;
   is_b2b: boolean;
   confidence: number;               // 0 .. 1 — wie sicher ist Claude bei dieser Analyse?
+  primary_flavor: string;
+  flavor_tags: string[];
+  flavor_confidence: number;
 };
 
 // Klassifiziert mehrere Texte in EINEM Aufruf (kostengünstig).
@@ -85,10 +88,12 @@ export async function analyzeBatch(texts: string[]): Promise<Analysis[]> {
     "Wenn jemand Zucker reduziert, Zucker meidet oder zuckerfreie Alternativen positiv bewertet, ist public_sentiment oft positiv, business_impact fuer Nordzucker aber eher negativ. " +
     "Wenn Nachfrage nach Backen, saisonalen Suesswaren oder industriellen Anwendungen steigt, kann business_impact positiv sein. " +
     "impact_reason muss eine kurze Kategorie sein, bevorzugt eine dieser Werte: substitution_risk, health_tailwind, seasonal_demand, pricing_support, regulatory_risk, b2b_opportunity, brand_tailwind, neutral_context, unknown. " +
+    "Extrahiere zusätzlich Geschmacksrichtungen aus dem Text fuer Produktentwicklung (z. B. limette, zitrone, orange, cola, vanille, erdbeere). " +
+    "Wenn keine Geschmacksrichtung erkennbar ist, nutze primary_flavor='none' und flavor_tags=[]. " +
     'is_b2b = true, wenn ein industrieller Großabnehmerbezug erkennbar ist (z. B. Cola-/Getränkehersteller). ' +
     'confidence beschreibt deine Sicherheit bei der Klassifikation: 1.0 = eindeutig, 0.5 = ambivalent/mehrdeutig, 0.0 = kaum Kontext vorhanden. ' +
     "Antworte AUSSCHLIESSLICH mit einem JSON-Array, ein Objekt pro Eingabe, in Reihenfolge. " +
-    'Schema je Objekt: {"public_sentiment": number (-1..1), "public_sentiment_label": "positiv"|"neutral"|"negativ", "business_impact": number (-1..1), "business_impact_label": "positiv"|"neutral"|"negativ", "impact_reason": string, "topic": string, "is_b2b": boolean, "confidence": number (0..1)}. ' +
+    'Schema je Objekt: {"public_sentiment": number (-1..1), "public_sentiment_label": "positiv"|"neutral"|"negativ", "business_impact": number (-1..1), "business_impact_label": "positiv"|"neutral"|"negativ", "impact_reason": string, "topic": string, "is_b2b": boolean, "confidence": number (0..1), "primary_flavor": string, "flavor_tags": string[], "flavor_confidence": number (0..1)}. ' +
     "Kein Markdown, keine Backticks, kein Vorwort.";
   const user =
     "Eingaben:\n" + texts.map((t, i) => `${i + 1}. ${t.replace(/\n/g, " ")}`).join("\n");
@@ -101,6 +106,11 @@ export async function analyzeBatch(texts: string[]): Promise<Analysis[]> {
       ...fallback(),
       ...arr[i],
       confidence: Math.max(0, Math.min(1, arr[i]?.confidence ?? 0.5)),
+      flavor_confidence: Math.max(0, Math.min(1, arr[i]?.flavor_confidence ?? 0.5)),
+      primary_flavor: String(arr[i]?.primary_flavor ?? "none").trim().toLowerCase() || "none",
+      flavor_tags: Array.isArray(arr[i]?.flavor_tags)
+        ? arr[i].flavor_tags.map((tag: unknown) => String(tag ?? "").trim().toLowerCase()).filter(Boolean).slice(0, 8)
+        : [],
     }));
   } catch (e) {
     console.error("analyzeBatch fallback:", e);
@@ -118,5 +128,8 @@ function fallback(): Analysis {
     topic: "unknown",
     is_b2b: false,
     confidence: 0,
+    primary_flavor: "none",
+    flavor_tags: [],
+    flavor_confidence: 0,
   };
 }

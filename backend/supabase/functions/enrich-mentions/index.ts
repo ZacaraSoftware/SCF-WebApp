@@ -97,6 +97,10 @@ Deno.serve(async (req) => {
         business_impact_label: string;
         impact_reason: string;
         is_b2b: boolean;
+        confidence: number;
+        primary_flavor: string;
+        flavor_tags: string[];
+        flavor_confidence: number;
       }> = [];
 
       try {
@@ -115,6 +119,10 @@ Deno.serve(async (req) => {
           business_impact_label: "neutral",
           impact_reason: "unknown",
           is_b2b: false,
+          confidence: 0,
+          primary_flavor: "none",
+          flavor_tags: [],
+          flavor_confidence: 0,
         };
         const analysis = analyses[idx] ?? fallback;
 
@@ -132,6 +140,11 @@ Deno.serve(async (req) => {
             sentiment_label: analysis.business_impact_label,
             is_b2b: analysis.is_b2b,
             analysis_confidence: Math.max(0, Math.min(1, analysis.confidence ?? 0.5)),
+            primary_flavor: String(analysis.primary_flavor ?? "none").trim().toLowerCase() || "none",
+            flavor_tags: Array.isArray(analysis.flavor_tags)
+              ? analysis.flavor_tags.map((tag) => String(tag ?? "").trim().toLowerCase()).filter(Boolean).slice(0, 8)
+              : [],
+            flavor_confidence: Math.max(0, Math.min(1, Number(analysis.flavor_confidence ?? analysis.confidence ?? 0.5))),
             embedding: vec,
             enrichment_status: "done",
             enriched_at: new Date().toISOString(),
@@ -151,6 +164,11 @@ Deno.serve(async (req) => {
             sentiment_label: analysis.business_impact_label,
             is_b2b: analysis.is_b2b,
             analysis_confidence: Math.max(0, Math.min(1, analysis.confidence ?? 0.5)),
+            primary_flavor: String(analysis.primary_flavor ?? "none").trim().toLowerCase() || "none",
+            flavor_tags: Array.isArray(analysis.flavor_tags)
+              ? analysis.flavor_tags.map((tag) => String(tag ?? "").trim().toLowerCase()).filter(Boolean).slice(0, 8)
+              : [],
+            flavor_confidence: Math.max(0, Math.min(1, Number(analysis.flavor_confidence ?? analysis.confidence ?? 0.5))),
             embedding: null,
             enrichment_status: "failed",
             enriched_at: null,

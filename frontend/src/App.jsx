@@ -6,14 +6,15 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from "recharts";
 import {
-  LayoutDashboard, TrendingUp, Users, Lightbulb, MessageSquare, Plug,
+  LayoutDashboard, TrendingUp, Lightbulb, MessageSquare, Plug,
   Download, FileText, AlertTriangle, ArrowUpRight, ArrowDownRight,
   Sparkles, Menu, X, Sun, ShieldAlert, Activity, CheckCircle2,
   Send, Loader2, Database, Minus, Info,
 } from "lucide-react";
 import {
-  loadMentions, loadCompetitors, loadSourceHealth, aiChat, aiRecommendations,
-  LIVE, SOURCES, TOPICS, ANCHOR, DAYMS, SOURCE_INFO, loadAppSettings, saveAppSettings, loadYoutubeTermStats, aiCommercialActions,
+  loadMentions, loadSourceHealth, aiChat, aiRecommendations,
+  LIVE, SOURCES, TOPICS, ANCHOR, DAYMS, SOURCE_INFO, loadAppSettings, saveAppSettings, loadYoutubeTermStats,
+  aiConversationHistory, aiConversationMessages,
 } from "./data";
 import { YoutubeQuotaWidget } from "./YoutubeQuotaWidget";
 
@@ -548,52 +549,11 @@ function sentimentAxisDomain(series) {
   return [-bound, bound];
 }
 
-function buildCompetitionWindow(comp, rangeDays) {
-  if (!comp || !Array.isArray(comp.series) || !Array.isArray(comp.names)) return comp;
-  const weeksWindow = Math.max(1, Math.ceil(Math.max(1, Number(rangeDays) || 7) / 7));
-  const scopedSeries = comp.series.slice(-weeksWindow);
-
-  const scopedNames = comp.names.map((entry) => {
-    const sovKey = `${entry.id}__sov`;
-    const sovValues = scopedSeries
-      .map((row) => Number(row?.[sovKey]))
-      .filter((value) => Number.isFinite(value) && value >= 0);
-    const avgSov = sovValues.length
-      ? sovValues.reduce((sum, value) => sum + value, 0) / sovValues.length
-      : Number(entry.sov ?? 0);
-    return {
-      ...entry,
-      sov: Math.max(0, avgSov),
-    };
-  });
-
-  const totalSov = scopedNames.reduce((sum, entry) => sum + (entry.sov ?? 0), 0);
-  const normalizedNames = totalSov > 0
-    ? scopedNames.map((entry) => ({ ...entry, sov: +(((entry.sov ?? 0) / totalSov) * 100).toFixed(2) }))
-    : scopedNames.map((entry) => ({ ...entry, sov: +(Number(entry.sov ?? 0)).toFixed(2) }));
-
-  return {
-    ...comp,
-    names: normalizedNames,
-    series: scopedSeries,
-  };
-}
-
-function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
+function buildExportReport({ agg, liveSignals, range, title, view }) {
   if (!agg) return null;
 
   const topTopicByVolume = agg.byTopic[0] ?? null;
   const biggestRisk = [...agg.byTopic].sort((a, b) => a.net - b.net)[0] ?? null;
-  const latestComp = comp?.series?.[comp.series.length - 1] ?? {};
-  const topCompetitor = comp?.names?.length
-    ? [...comp.names]
-      .map((item) => ({
-        name: item.name,
-        score: Number(latestComp[item.id] ?? 0),
-        sov: Number(item.sov ?? 0),
-      }))
-      .sort((a, b) => b.score - a.score || b.sov - a.sov)[0]
-    : null;
 
   const topicById = Object.fromEntries((agg.byTopic ?? []).map((topic) => [topic.id, topic]));
   const recommendations = [];
@@ -688,19 +648,6 @@ function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
     });
   }
 
-  if (topCompetitor && topCompetitor.score > agg.curNet + 10) {
-    const score = 60 + Math.min(30, (topCompetitor.score - agg.curNet));
-    pushRecommendation({
-      priority: "Mittel",
-      owner: "Competitive Intelligence",
-      horizon: "14-30 Tage",
-      action: `Wettbewerber ${topCompetitor.name} kommunikativ kontern`,
-      reason: `Wettbewerber erreicht ${signed(topCompetitor.score)} bei ${topCompetitor.sov}% Share of Voice und liegt deutlich über Nordzucker.`,
-      successKpi: "Gap im Net-Impact < 5 Punkte",
-      score,
-    });
-  }
-
   if (liveSignals?.length) {
     const signal = liveSignals[0];
     const score = 50 + Math.min(20, Math.round((signal.score ?? 0.2) * 100 / 6));
@@ -728,7 +675,6 @@ function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
   }
 
   const viewBoost = (item) => {
-    if (view === "comp" && item.owner === "Competitive Intelligence") return 10;
     if (view === "bi" && (item.owner === "Category Management" || item.owner === "Pricing + Vertrieb")) return 8;
     if (view === "trends" && item.owner === "Market Intelligence") return 10;
     if (view === "dashboard" && item.priority === "Hoch") return 6;
@@ -786,16 +732,13 @@ function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
   const summaryRows = [
     ["Report", title],
     ["Zeitraum", `Letzte ${range} Tage`],
-    ["Report-Fokus", view === "comp" ? "Wettbewerb" : view === "bi" ? "BI Steuerung" : view === "trends" ? "Risiko- und Signalfrüherkennung" : "Management Snapshot"],
+    ["Report-Fokus", view === "bi" ? "BI Steuerung" : view === "trends" ? "Risiko- und Signalfrüherkennung" : "Management Snapshot"],
     ["Business Impact (Net)", `${signed(agg.curNet)} (Delta ${signed(agg.netDelta)})`],
     ["Public Sentiment (Net)", `${signed(agg.curPublicNet)} (Delta ${signed(agg.publicNetDelta)})`],
     ["Erwähnungen", `${agg.curVol} (Delta ${signed(agg.volDelta)}%)`],
     ["Positiver Business-Anteil", `${agg.posShare}%`],
     ["Top-Thema nach Volumen", topTopicByVolume ? `${topTopicByVolume.label} (${topTopicByVolume.vol})` : "n/a"],
   ];
-  if (topCompetitor) {
-    summaryRows.push(["Stärkster Wettbewerber", `${topCompetitor.name} (${signed(topCompetitor.score)}, SoV ${topCompetitor.sov}%)`]);
-  }
 
   return {
     generatedAt: REPORT_GENERATED_AT.toLocaleDateString("de-DE"),
@@ -803,302 +746,6 @@ function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
     status,
     actionPlan,
     recommendations: topThree,
-  };
-}
-
-function buildCommercialCockpit({ agg, comp, signals, range, mentions, aiResult }) {
-  if (!agg) return null;
-
-  const progressTowardMin = (current, target, floor = -30) => {
-    if (current >= target) return 100;
-    return clampScore(((current - floor) / Math.max(1, target - floor)) * 100);
-  };
-  const progressTowardMax = (current, target, ceiling = 20) => {
-    if (current <= target) return 100;
-    return clampScore(((ceiling - current) / Math.max(1, ceiling - target)) * 100);
-  };
-
-  const topicById = Object.fromEntries((agg.byTopic ?? []).map((topic) => [topic.id, topic]));
-  const riskSignals = (signals ?? []).filter((signal) => signal.severity === "Risiko").length;
-  const chanceSignals = (signals ?? []).filter((signal) => signal.severity === "Chance").length;
-  const topSources = [...(agg.bySource ?? [])].sort((a, b) => b.vol - a.vol).slice(0, 2);
-  const sourceFocus = topSources.length
-    ? topSources.map((source) => source.label).join(" + ")
-    : "Alle aktiven Quellen";
-
-  const latestComp = comp?.series?.[comp.series.length - 1] ?? {};
-  const competitors = (comp?.names ?? []).map((entry) => ({
-    ...entry,
-    score: Number(latestComp[entry.id] ?? 0),
-  }));
-  const nordzucker = competitors.find((entry) => entry.id === "nordzucker");
-  const strongestCompetitor = competitors
-    .filter((entry) => entry.id !== "nordzucker")
-    .sort((a, b) => b.score - a.score || b.sov - a.sov)[0] ?? null;
-  const competitorGap = strongestCompetitor && nordzucker
-    ? strongestCompetitor.score - nordzucker.score
-    : 0;
-
-  const sourceDiversity = (agg.bySource ?? []).filter((source) => source.vol > 0).length;
-  const sampleSizeScore = Math.min(100, (agg.curVol ?? 0) * 1.6);
-  const stabilityScore = Math.max(0, 100 - Math.min(100, Math.abs(agg.publicNetDelta ?? 0) * 4));
-
-  const customerClosenessIndex = clampScore(
-    48
-    + (agg.curPublicNet * 0.8)
-    + (agg.posShare * 0.28)
-    + (chanceSignals * 5)
-    - (riskSignals * 6)
-    + (Math.max(0, agg.netDelta) * 0.9),
-  );
-
-  const retentionRiskIndex = clampScore(
-    52
-    + (Math.max(0, -agg.curNet) * 0.9)
-    + (Math.max(0, -agg.publicNetDelta) * 1.3)
-    + (riskSignals * 8)
-    + (competitorGap > 0 ? Math.min(20, competitorGap * 1.2) : 0)
-    - (chanceSignals * 4),
-  );
-
-  const opportunityIndex = clampScore(
-    50
-    + (agg.curNet * 0.8)
-    + (agg.posShare * 0.25)
-    + (Math.max(0, agg.netDelta) * 1.2)
-    + (chanceSignals * 7)
-    - (riskSignals * 5),
-  );
-
-  const decisionConfidenceIndex = clampScore(
-    (sampleSizeScore * 0.45)
-    + ((sourceDiversity / Math.max(1, (agg.bySource ?? []).length)) * 100 * 0.3)
-    + (stabilityScore * 0.25),
-  );
-
-  const strategyMode = retentionRiskIndex >= 68
-    ? {
-      title: "Defensiv steuern",
-      tone: "var(--neg)",
-      text: "Kundenbindung absichern, Einwände systematisch adressieren und Churn-Risiko priorisieren.",
-    }
-    : opportunityIndex >= 65 && customerClosenessIndex >= 58
-      ? {
-        title: "Offensiv wachsen",
-        tone: "var(--pos)",
-        text: "Positive Marktstimmung für Upsell/Cross-Sell nutzen und Winning-Segmente skalieren.",
-      }
-      : {
-        title: "Balanciert aussteuern",
-        tone: "var(--neu)",
-        text: "Parallel Chancen heben und kritische Segmente eng monitoren.",
-      };
-
-  const actions = [];
-  const addAction = (entry) => {
-    if (actions.some((item) => item.action === entry.action)) return;
-    const id = entry.id || String(entry.action ?? "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
-    actions.push({ ...entry, id, score: clampScore(entry.score) });
-  };
-
-  const softdrinks = topicById.softdrinks;
-  if (softdrinks && softdrinks.vol >= 2 && softdrinks.net <= -8) {
-    addAction({
-      id: "softdrinks-key-accounts",
-      score: 88 + Math.min(10, Math.abs(softdrinks.net)),
-      priority: "Hoch",
-      owner: "Vertrieb B2B",
-      horizon: "0-14 Tage",
-      trigger: `${softdrinks.label}: ${signed(softdrinks.net)} bei ${softdrinks.vol} Erwähnungen`,
-      action: "Key-Account-Storyline für Softdrink-Kunden mit Nutzenargumenten schärfen",
-      objective: "Kundenbindung stabilisieren",
-      expectedEffect: "Weniger Einwände im B2B-Vertrieb und bessere Abschlussquote",
-      kpi: "Impact Softdrinks > -5 und mindestens +10% positive Business-Mentions im Segment",
-      kpiProgress: progressTowardMin(softdrinks.net, -5, -35),
-      kpiCurrent: `Aktuell ${signed(softdrinks.net)} Impact`,
-      channel: sourceFocus,
-    });
-  }
-
-  const seasonal = topicById.saisonal;
-  if (seasonal && seasonal.vol >= 3 && seasonal.net >= 8) {
-    addAction({
-      id: "seasonal-activation",
-      score: 78 + Math.min(12, seasonal.net),
-      priority: "Hoch",
-      owner: "Marketing + Category",
-      horizon: "7-21 Tage",
-      trigger: `${seasonal.label}: ${signed(seasonal.net)} bei ${seasonal.vol} Erwähnungen`,
-      action: "Saisonale Aktivierung für volumenstarke Anwendungsfälle priorisieren",
-      objective: "Kundenaktivierung steigern",
-      expectedEffect: "Höhere Nachfrage in saisonalen Segmenten",
-      kpi: "Saison-Themenvolumen +15% bei stabil positivem Impact",
-      kpiProgress: clampScore(((Math.max(0, seasonal.net) / 12) * 60) + ((Math.min(12, seasonal.vol) / 12) * 40)),
-      kpiCurrent: `Aktuell ${signed(seasonal.net)} Impact bei ${seasonal.vol} Erwähnungen`,
-      channel: sourceFocus,
-    });
-  }
-
-  const sugarFree = topicById.zuckerfrei;
-  if (sugarFree && sugarFree.vol >= 2 && sugarFree.net <= -6) {
-    addAction({
-      id: "zuckerfrei-trust",
-      score: 82 + Math.min(12, Math.abs(sugarFree.net)),
-      priority: "Hoch",
-      owner: "Marketing Produktkommunikation",
-      horizon: "0-21 Tage",
-      trigger: `${sugarFree.label}: ${signed(sugarFree.net)} bei ${sugarFree.vol} Erwähnungen`,
-      action: "Nutzenargumentation zu verantwortungsvollem Zuckerkonsum und Produktalternativen stärken",
-      objective: "Vertrauensverlust reduzieren",
-      expectedEffect: "Besseres Markenvertrauen in ernährungssensiblen Zielgruppen",
-      kpi: "Impact Zuckerfrei > -3 und Public Sentiment im Thema +8 Punkte",
-      kpiProgress: progressTowardMin(sugarFree.net, -3, -30),
-      kpiCurrent: `Aktuell ${signed(sugarFree.net)} Impact`,
-      channel: "Owned Media + PR + Kundennewsletter",
-    });
-  }
-
-  const pricing = topicById.preise;
-  if (pricing && pricing.vol >= 2) {
-    addAction({
-      id: "pricing-story",
-      score: pricing.net >= 0 ? 72 : 69,
-      priority: pricing.net >= 0 ? "Mittel" : "Hoch",
-      owner: "Pricing + Vertrieb",
-      horizon: "0-30 Tage",
-      trigger: `${pricing.label}: ${signed(pricing.net)} bei ${pricing.vol} Erwähnungen`,
-      action: pricing.net >= 0
-        ? "Preis-Leistungs-Narrativ offensiv in Angebotsargumentation nutzen"
-        : "Preisargumentation defensiv absichern und Einwände standardisieren",
-      objective: pricing.net >= 0 ? "Preisakzeptanz ausbauen" : "Preisfriktion abbauen",
-      expectedEffect: pricing.net >= 0 ? "Mehr Conversion bei Bestands- und Neukunden" : "Weniger Churn durch Preiswahrnehmung",
-      kpi: "Positiver Preis-Impact >= 0 und Conversion im Angebotsprozess stabil",
-      kpiProgress: progressTowardMin(pricing.net, 0, -25),
-      kpiCurrent: `Aktuell ${signed(pricing.net)} Impact`,
-      channel: "LinkedIn Sales + Fachpresse + Kundenkommunikation",
-    });
-  }
-
-  if (strongestCompetitor && nordzucker && competitorGap > 6) {
-    addAction({
-      id: "competitor-counter",
-      score: 74 + Math.min(16, competitorGap),
-      priority: "Mittel",
-      owner: "Marketing Kommunikation",
-      horizon: "14-30 Tage",
-      trigger: `${strongestCompetitor.name} liegt mit ${signed(strongestCompetitor.score)} vor Nordzucker (${signed(nordzucker.score)})`,
-      action: `Konterkampagne gegen ${strongestCompetitor.name} mit differenzierenden Botschaften planen`,
-      objective: "Abwanderungsdruck senken",
-      expectedEffect: "Stärkere Bindung in kompetitiven Kundenkonten",
-      kpi: "Sentiment-Gap zu Top-Wettbewerber < 3 Punkte",
-      kpiProgress: progressTowardMax(competitorGap, 3, 20),
-      kpiCurrent: `Aktuell Gap ${signed(competitorGap)}`,
-      channel: "PR + Social + Sales Enablement",
-    });
-  }
-
-  if (retentionRiskIndex >= 66) {
-    addAction({
-      id: "risk-accounts",
-      score: 86,
-      priority: "Hoch",
-      owner: "Vertrieb + Customer Success",
-      horizon: "0-14 Tage",
-      trigger: `Retention Risk Index ${retentionRiskIndex}`,
-      action: "Top-20 Risiko-Accounts mit proaktiven Review-Calls und Value-Proposition absichern",
-      objective: "Kritische Kunden sichern",
-      expectedEffect: "Reduzierter Abwanderungsdruck bei Schlüsselkonten",
-      kpi: "Risiko-Accounts mit positivem Follow-up-Feedback >= 70%",
-      kpiProgress: clampScore((100 - retentionRiskIndex) * 0.9),
-      kpiCurrent: `Retention-Risk aktuell ${retentionRiskIndex}`,
-      channel: "Direktvertrieb + Account Reviews",
-    });
-  }
-
-  if (!actions.length) {
-    addAction({
-      id: "always-on-growth",
-      score: 58,
-      priority: "Mittel",
-      owner: "Commercial Steering",
-      horizon: "14-30 Tage",
-      trigger: "Keine dominant negativen Themen bei stabilen Signalen",
-      action: "Always-on Monitoring beibehalten und Testkampagne für Wachstumssegment starten",
-      objective: "Kontinuierliche Kundennähe",
-      expectedEffect: "Stabiles Engagement bei Bestandskunden",
-      kpi: "Business Impact stabil >= +5",
-      kpiProgress: progressTowardMin(agg.curNet, 5, -20),
-      kpiCurrent: `Aktuell ${signed(agg.curNet)} Business Impact`,
-      channel: sourceFocus,
-    });
-  }
-
-  const watchlist = [
-    `Zeitraum: letzte ${range} Tage`,
-    `Top-Quellen für Aktivierung: ${sourceFocus}`,
-    `Risikosignale: ${riskSignals}, Chancensignale: ${chanceSignals}`,
-    strongestCompetitor
-      ? `Wettbewerbsdruck: ${strongestCompetitor.name} mit Gap ${signed(competitorGap)} Punkten`
-      : "Wettbewerbsdruck: keine belastbare Führungsmarke im Datenausschnitt",
-    `Kundennähe-Index: ${customerClosenessIndex} · Retention-Risk: ${retentionRiskIndex} · Decision-Confidence: ${decisionConfidenceIndex}`,
-    `Datengrundlage: ${(mentions ?? []).length} Erwähnungen im Speicher, ${agg.curVol} im aktiven Fenster`,
-  ];
-
-  const aiActions = Array.isArray(aiResult?.actions)
-    ? aiResult.actions
-      .map((item, idx) => ({
-        id: String(item?.id ?? `ai-action-${idx + 1}`).trim() || `ai-action-${idx + 1}`,
-        score: clampScore(Number(item?.score ?? 60)),
-        priority: ["Hoch", "Mittel", "Niedrig"].includes(String(item?.priority ?? "")) ? item.priority : "Mittel",
-        owner: String(item?.owner ?? "Marketing + Vertrieb"),
-        horizon: String(item?.horizon ?? "14-30 Tage"),
-        objective: String(item?.objective ?? "Kundennähe steigern"),
-        trigger: String(item?.trigger ?? "KI-Trigger"),
-        action: String(item?.action ?? "KI-Maßnahme"),
-        expectedEffect: String(item?.expected_effect ?? item?.expectedEffect ?? "Positive Wirkung auf Kundenbindung"),
-        kpi: String(item?.kpi ?? "Business Impact verbessern"),
-        channel: String(item?.channel ?? "Marketing + Vertrieb"),
-        confidence: Math.max(0, Math.min(1, Number(item?.confidence ?? 0.55))),
-        evidenceRefs: Array.isArray(item?.evidence_refs) ? item.evidence_refs.map((v) => Number(v)).filter((v) => Number.isInteger(v)) : [],
-        evidence: Array.isArray(item?.evidence) ? item.evidence.map((v) => String(v)) : [],
-        kpiProgress: clampScore(Number(item?.score ?? 60) * 0.75),
-        kpiCurrent: "KI-Empfehlung aktiv - Fortschritt nach Umsetzung messen",
-      }))
-      .filter((item) => item.action)
-    : [];
-
-  return {
-    opportunityIndex,
-    customerClosenessIndex,
-    retentionRiskIndex,
-    decisionConfidenceIndex,
-    competitorGap,
-    strongestCompetitor,
-    strategyMode: aiResult?.strategy_mode?.title
-      ? {
-        title: String(aiResult.strategy_mode.title),
-        text: String(aiResult.strategy_mode.text ?? "Strategie durch KI aus aktuellem Datenkontext abgeleitet."),
-        tone: String(aiResult.strategy_mode.title).startsWith("Defensiv")
-          ? "var(--neg)"
-          : String(aiResult.strategy_mode.title).startsWith("Offensiv")
-            ? "var(--pos)"
-            : "var(--neu)",
-      }
-      : strategyMode,
-    actions: (aiActions.length ? aiActions : actions).sort((a, b) => b.score - a.score),
-    actionSource: aiActions.length ? "llm" : "fallback",
-    governance: {
-      minConfidence: Number(aiResult?.governance?.min_confidence ?? 0.62),
-      acceptedActions: Number(aiResult?.governance?.accepted_actions ?? aiActions.length),
-      droppedActions: Number(aiResult?.governance?.dropped_actions ?? 0),
-      runId: aiResult?.audit?.run_id ?? null,
-      generatedAt: aiResult?.audit?.generated_at ?? null,
-      versionId: aiResult?.audit?.version_id ?? null,
-    },
-    watchlist,
   };
 }
 const dateLabel = d => `${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}`;
@@ -1200,6 +847,114 @@ function aggregate(mentions, range, topicCatalog){
     posShare: impactPositiveShare(cur), posShareDelta: impactPositiveShare(cur)-impactPositiveShare(prev),
     publicPosShare: publicPositiveShare(cur), publicPosShareDelta: publicPositiveShare(cur)-publicPositiveShare(prev),
     series, bySource, byTopic,
+  };
+}
+
+const KNOWN_FLAVORS = [
+  "limette", "zitrone", "orange", "cola", "vanille", "erdbeere", "kirsche", "himbeere", "apfel", "mango", "pfirsich", "ingwer", "minze",
+];
+
+function normalizeFlavorName(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized || normalized === "none" || normalized === "unknown") return "";
+  const aliases = {
+    lime: "limette",
+    limette: "limette",
+    lemon: "zitrone",
+    zitrone: "zitrone",
+    cola: "cola",
+    vanilla: "vanille",
+    vanille: "vanille",
+    strawberry: "erdbeere",
+    erdbeere: "erdbeere",
+    cherry: "kirsche",
+    kirsche: "kirsche",
+    raspberry: "himbeere",
+    himbeere: "himbeere",
+    apple: "apfel",
+    apfel: "apfel",
+  };
+  return aliases[normalized] ?? normalized;
+}
+
+function titleFlavor(value) {
+  const normalized = normalizeFlavorName(value);
+  if (!normalized) return "n/a";
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function flavorCandidatesFromMention(mention) {
+  const candidates = [];
+  const primary = normalizeFlavorName(mention?.primaryFlavor);
+  if (primary) candidates.push(primary);
+
+  const tags = Array.isArray(mention?.flavorTags) ? mention.flavorTags : [];
+  for (const tag of tags) {
+    const norm = normalizeFlavorName(tag);
+    if (norm) candidates.push(norm);
+  }
+
+  if (candidates.length === 0) {
+    const text = `${mention?.text ?? ""} ${mention?.topicLabel ?? ""}`.toLowerCase();
+    for (const flavor of KNOWN_FLAVORS) {
+      if (text.includes(flavor)) candidates.push(flavor);
+    }
+  }
+
+  return Array.from(new Set(candidates));
+}
+
+function buildFlavorInsights(mentions, range) {
+  const endExclusive = WINDOW_END_EXCLUSIVE;
+  const rangeCut = endExclusive - range * DAYMS;
+  const summerStart = Date.UTC(WINDOW_LAST_COMPLETE_DAY.getFullYear(), 5, 1);
+  const summerEnd = Date.UTC(WINDOW_LAST_COMPLETE_DAY.getFullYear(), 8, 1);
+
+  const relevant = (mentions ?? []).filter((m) => m.ts >= rangeCut && m.ts < endExclusive);
+  const sourceScoped = relevant.filter((m) => m.source === "youtube" || m.source === "news");
+  const summerScoped = sourceScoped.filter((m) => m.ts >= summerStart && m.ts < summerEnd);
+
+  const bucket = new Map();
+  for (const mention of sourceScoped) {
+    const flavors = flavorCandidatesFromMention(mention);
+    for (const flavor of flavors) {
+      const slot = bucket.get(flavor) ?? { flavor, count: 0, sumPublic: 0, youtube: 0, news: 0 };
+      slot.count += 1;
+      slot.sumPublic += Number(mention.publicSentiment ?? mention.sentiment ?? 0);
+      if (mention.source === "youtube") slot.youtube += 1;
+      if (mention.source === "news") slot.news += 1;
+      bucket.set(flavor, slot);
+    }
+  }
+
+  const ranked = Array.from(bucket.values())
+    .map((entry) => ({
+      ...entry,
+      net: entry.count > 0 ? Math.round((entry.sumPublic / entry.count) * 100) : 0,
+    }))
+    .sort((a, b) => b.count - a.count || b.net - a.net);
+
+  const summerBucket = new Map();
+  for (const mention of summerScoped) {
+    const flavors = flavorCandidatesFromMention(mention);
+    for (const flavor of flavors) {
+      summerBucket.set(flavor, (summerBucket.get(flavor) ?? 0) + 1);
+    }
+  }
+  const summerTop = Array.from(summerBucket.entries()).sort((a, b) => b[1] - a[1])[0] ?? null;
+
+  return {
+    totalMentions: sourceScoped.length,
+    ranked,
+    top: ranked[0] ?? null,
+    summerTop: summerTop ? { flavor: summerTop[0], count: summerTop[1] } : null,
   };
 }
 
@@ -1390,7 +1145,7 @@ const InfoHint = ({ title, text, align = "right" }) => (
 );
 
 /* =========================  DASHBOARD  ========================= */
-function Dashboard({ agg, range, signals }){
+function Dashboard({ agg, range, signals, flavorInsights }){
   const sentimentDomain = sentimentAxisDomain(agg.series);
   const severityCount = signals.reduce((acc, s) => {
     acc[s.severity] = (acc[s.severity] ?? 0) + 1;
@@ -1543,6 +1298,46 @@ function Dashboard({ agg, range, signals }){
           )}
         </div>
       </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-h">
+          <div>
+            <div className="tt"><div className="card-t">Trend-Geschmäcker für Produktentwicklung</div>
+              <InfoHint title="Trend-Geschmäcker" text="Zeigt Geschmacksrichtungen aus YouTube- und News-Daten mit der höchsten Resonanz. Diese Trends unterstützen Priorisierung in der Produktentwicklung." />
+            </div>
+            <div className="card-s">
+              {flavorInsights?.summerTop
+                ? `Sommertrend ${WINDOW_LAST_COMPLETE_DAY.getFullYear()}: ${titleFlavor(flavorInsights.summerTop.flavor)} (${flavorInsights.summerTop.count} Erwähnungen)`
+                : "Noch kein belastbarer Sommertrend im aktuellen Datenfenster"}
+            </div>
+          </div>
+        </div>
+        {!(flavorInsights?.ranked?.length) ? (
+          <div className="empty" style={{padding:"22px 12px"}}>
+            <AlertTriangle size={20} style={{color:"var(--ink-3)"}}/>
+            <div>Keine Geschmacksrichtungen im aktuellen YouTube/News-Fenster erkannt.</div>
+          </div>
+        ) : (
+          <div className="tbl-shell tbl-scroll">
+            <table className="tbl tbl-wide">
+              <thead><tr><th>Rang</th><th>Geschmack</th><th>Erwähnungen</th><th>Sentiment (Public)</th><th>YouTube</th><th>News</th><th>Empfehlung</th></tr></thead>
+              <tbody>
+                {flavorInsights.ranked.slice(0, 6).map((row, idx) => (
+                  <tr key={row.flavor}>
+                    <td style={{fontWeight:600,color:"var(--ink-3)"}}>{idx + 1}</td>
+                    <td style={{fontWeight:600}}>{titleFlavor(row.flavor)}</td>
+                    <td>{row.count}</td>
+                    <td style={{fontWeight:600,color:sentColor(row.net / 100)}}>{row.net > 0 ? "+" : ""}{row.net}</td>
+                    <td>{row.youtube}</td>
+                    <td>{row.news}</td>
+                    <td>{idx === 0 ? "Als Pilot-SKU testen" : "Im Radar behalten"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </>
   );
 }
@@ -1662,101 +1457,6 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
   );
 }
 
-/* =========================  WETTBEWERB  ========================= */
-function Competition({ onExport, comp, range }){
-  if (!comp) return null;
-  if (!comp.names?.length || !comp.series?.length) {
-    return (
-      <div className="card">
-        <div className="empty">
-          <AlertTriangle size={28} style={{ color: "var(--neu)" }} />
-          <div style={{ fontWeight: 600, color: "var(--ink)" }}>Noch keine Wettbewerbsdaten vorhanden</div>
-          <div style={{ maxWidth: 560, fontSize: 12.5 }}>
-            Die Wettbewerbsansicht wird automatisch befüllt, sobald die Ingestion Wettbewerber-Mentions
-            aus den Quellen sammelt und daraus Wochenmetriken erzeugt.
-          </div>
-        </div>
-      </div>
-    );
-  }
-  const latest = comp.series[comp.series.length-1] || {};
-  const ranked = comp.names.map(n=>({ ...n, score: latest[n.id] ?? 0 })).sort((a,b)=>b.score-a.score);
-  const sov = comp.names.map(n=>({ name:n.name, value:n.sov, color:n.color }));
-  return (
-    <>
-      <p className="lede" style={{marginBottom:20}}>
-        Vergleich der öffentlichen Markenstimmung und des Share of Voice gegenüber den wichtigsten Wettbewerbern
-        im europäischen Zuckermarkt (letzte {range} Tage).
-      </p>
-      <div className="grid g-split-1-1" style={{marginBottom:16}}>
-        <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Markenstimmung im Verlauf</div>
-            <InfoHint title="Markenstimmung im Verlauf" text="Vergleicht den Sentiment-Verlauf der Marken. Entscheidend ist die Distanz zu Nordzucker über mehrere Wochen, nicht nur ein kurzfristiger Peak." />
-          </div>
-            <div className="card-s">{Math.max(1, comp.series.length)} Wochen im Fenster, je Hersteller</div></div></div>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={comp.series} margin={{top:5,right:8,left:-22,bottom:0}}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false}/>
-              <XAxis dataKey="week" tick={{fontSize:10.5,fill:"#8694a8"}} axisLine={false} tickLine={false} minTickGap={18}/>
-              <YAxis tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false}/>
-              <Tooltip content={<ChartTip/>}/>
-              {comp.names.map(n=><Line key={n.id} type="monotone" dataKey={n.id} name={n.name}
-                stroke={n.color} strokeWidth={n.id==="nordzucker"?3:1.8} dot={false}
-                strokeDasharray={n.id==="nordzucker"?"":""}/>)}
-            </LineChart>
-          </ResponsiveContainer>
-          <div style={{display:"flex",gap:14,flexWrap:"wrap",marginTop:8}}>
-            {comp.names.map(n=>(<span key={n.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--ink-2)"}}>
-              <span className="dot" style={{background:n.color}}/>{n.name}</span>))}
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Share of Voice</div>
-            <InfoHint title="Share of Voice" text="Anteil an der gesamten öffentlichen Diskussion. Hoher SoV ist positiv nur dann, wenn die begleitende Stimmung und Business-Wirkung ebenfalls stabil sind." />
-          </div>
-            <div className="card-s">Anteil am Gesamtgesprächsvolumen</div></div></div>
-          <ResponsiveContainer width="100%" height={200}>
-            <PieChart>
-              <Pie data={sov} dataKey="value" nameKey="name" innerRadius={48} outerRadius={76} paddingAngle={2}>
-                {sov.map((e,i)=><Cell key={i} fill={e.color}/>)}
-              </Pie>
-              <Tooltip content={<ChartTip unit="%"/>}/>
-            </PieChart>
-          </ResponsiveContainer>
-          <div style={{display:"flex",flexDirection:"column",gap:5,marginTop:4}}>
-            {sov.map((s,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:12.5}}>
-              <span className="dot" style={{background:s.color}}/>{s.name}
-              <span style={{marginLeft:"auto",fontWeight:600}}>{s.value}%</span></div>))}
-          </div>
-        </div>
-      </div>
-      <div className="card">
-        <div className="card-h">
-          <div className="tt"><div className="card-t">Benchmark-Tabelle</div>
-            <InfoHint title="Benchmark-Tabelle" text="Kombiniert Rang, Markenstimmung und Share of Voice. Kritisch ist ein Mix aus niedrigem Rang und negativer Stimmung bei gleichzeitig hoher Sichtbarkeit der Konkurrenz." />
-          </div>
-          <button className="btn no-print" onClick={onExport}><Download size={14}/> CSV</button>
-        </div>
-        <div className="tbl-shell tbl-scroll">
-        <table className="tbl tbl-wide">
-          <thead><tr><th>Rang</th><th>Hersteller</th><th>Markenstimmung</th><th>Share of Voice</th><th>Bewertung</th></tr></thead>
-          <tbody>
-            {ranked.map((r,i)=>(
-              <tr key={r.id}>
-                <td style={{fontWeight:600,color:"var(--ink-3)"}}>{i+1}</td>
-                <td style={{fontWeight:600}}>{r.name}{r.id==="nordzucker"&&<span className="tag" style={{marginLeft:8,background:"var(--nz-100)",color:"var(--nz-700)"}}>Wir</span>}</td>
-                <td style={{fontWeight:600,color:sentColor(r.score/100)}}>{r.score>0?"+":""}{r.score}</td>
-                <td>{r.sov}%</td>
-                <td><span className={`pill ${sentClass(r.score/100)}`}>{r.score>15?"positiv":r.score<-15?"negativ":"neutral"}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
-      </div>
-    </>
-  );
-}
 
 /* =========================  EMPFEHLUNGEN & PROGNOSEN (AI)  ========================= */
 function Recommendations({ dataSummary }){
@@ -1842,16 +1542,78 @@ function Recommendations({ dataSummary }){
 }
 
 /* =========================  KI-ASSISTENT (chat)  ========================= */
+const ASSISTANT_SESSION_KEY = "scf_ai_session_id";
+
+function getAssistantSessionId(){
+  if (typeof window === "undefined") return "session-server";
+  const existing = window.localStorage.getItem(ASSISTANT_SESSION_KEY);
+  if (existing) return existing;
+  const generated = window.crypto?.randomUUID?.() ?? `session-${Date.now()}`;
+  window.localStorage.setItem(ASSISTANT_SESSION_KEY, generated);
+  return generated;
+}
+
 function Assistant({ dataSummary }){
   const [log, setLog] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [input, setInput] = useState(""); const [busy, setBusy] = useState(false);
+  const [sessionId] = useState(() => getAssistantSessionId());
   const endRef = useRef(null);
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth"}); }, [log, busy]);
+
+  const refreshHistory = async () => {
+    if (!LIVE) {
+      setHistory([]);
+      return;
+    }
+    try {
+      const rows = await aiConversationHistory(sessionId, 20);
+      setHistory(rows);
+    } catch {
+      setHistory([]);
+    }
+  };
+
+  useEffect(() => {
+    refreshHistory();
+  }, [sessionId]);
+
   const suggestions = [
     "Welche Themen sind aktuell das größte Risiko für unser B2B-Geschäft?",
     "Wie steht Nordzucker im Stimmungsvergleich zu Südzucker?",
     "Was treibt die saisonalen Trends gerade an?",
   ];
+
+  const startNewConversation = () => {
+    setConversationId(null);
+    setLog([]);
+    setInput("");
+  };
+
+  const openConversation = async (id) => {
+    if (!id || !LIVE || historyBusy || busy) return;
+    setHistoryBusy(true);
+    try {
+      const data = await aiConversationMessages(sessionId, id, 160);
+      const msgs = Array.isArray(data?.messages)
+        ? data.messages
+          .filter((m) => m?.role === "user" || m?.role === "assistant")
+          .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
+        : [];
+      setConversationId(id);
+      setLog(msgs);
+    } catch {
+      setLog((prev) => [...prev, {
+        role: "assistant",
+        content: "Verlauf konnte nicht geladen werden. Bitte erneut versuchen.",
+      }]);
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
   const send = async (q) => {
     const text = (q ?? input).trim(); if (!text || busy) return;
     const next = [...log, { role:"user", content:text }];
@@ -1861,20 +1623,52 @@ function Assistant({ dataSummary }){
       setBusy(false); return;
     }
     try {
-      const msgs = next.map(m=>({ role:m.role, content:m.content }));
-      const ans = await aiChat(msgs);
-      setLog([...next, { role:"assistant", content:ans }]);
+      const response = await aiChat({
+        session_id: sessionId,
+        conversation_id: conversationId,
+        messages: next.map((m) => ({ role: m.role, content: m.content })),
+        question: text,
+        days: 3650,
+      });
+      const nextConversationId = response?.conversation_id ?? conversationId;
+      if (nextConversationId) setConversationId(nextConversationId);
+      setLog([...next, { role:"assistant", content: String(response?.answer ?? "") }]);
+      refreshHistory();
     } catch(e){
       setLog([...next, { role:"assistant", content:"Die KI-Schnittstelle ist gerade nicht erreichbar. Prüfe, ob die ai-query Edge Function deployed und der Anthropic-Key als Secret gesetzt ist." }]);
     } finally { setBusy(false); }
   };
   return (
     <div className="card chat-wrap">
+      <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
+        <button className="btn" onClick={startNewConversation} disabled={busy || historyBusy}>Neue Unterhaltung</button>
+        <select
+          value={conversationId ?? ""}
+          onChange={(e) => openConversation(e.target.value)}
+          disabled={!LIVE || busy || historyBusy || history.length === 0}
+          style={{
+            minWidth: 260,
+            border: "1px solid var(--line)",
+            borderRadius: 10,
+            padding: "8px 10px",
+            color: "var(--ink)",
+            background: "#fff",
+          }}
+        >
+          <option value="">{history.length === 0 ? "Kein Verlauf" : "Verlauf auswählen"}</option>
+          {history.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.title || "Neue Unterhaltung"}
+            </option>
+          ))}
+        </select>
+        {historyBusy && <span style={{fontSize:12,color:"var(--ink-3)"}}>Lade Verlauf...</span>}
+      </div>
       {log.length===0 ? (
         <div className="empty" style={{flex:1,justifyContent:"center"}}>
           <MessageSquare size={30} style={{color:"var(--nz-500)"}}/>
           <div style={{fontWeight:600,fontSize:15,color:"var(--ink)"}}>Frag die Daten</div>
-          <div style={{maxWidth:440}}>Stelle Fragen zur Geschäftsauswirkung, zu Trends, Risiken oder zum Wettbewerb. Antworten basieren auf den live aggregierten Daten aus Sicht von Nordzucker.</div>
+          <div style={{maxWidth:440}}>Stelle Fragen zur Geschäftsauswirkung, zu Trends oder zu Risiken. Antworten basieren auf den live aggregierten Daten aus Sicht von Nordzucker.</div>
         </div>
       ) : (
         <div className="chat-log">
@@ -2450,276 +2244,12 @@ function BICube({ mentions }) {
   );
 }
 
-/* =========================  MARKETING & VERTRIEB  ========================= */
-function CommercialCockpit({ agg, range, cockpit, aiState, onRefreshAi }) {
-  if (!agg || !cockpit) return null;
-  const STATUS_KEY = "scf_commercial_action_status_v1";
-  const statusMeta = {
-    planned: { label: "Geplant", tone: "neu", weight: 25 },
-    in_progress: { label: "In Umsetzung", tone: "pos", weight: 60 },
-    effective: { label: "Wirksam", tone: "pos", weight: 100 },
-    stopped: { label: "Gestoppt", tone: "neg", weight: 0 },
-  };
-
-  const [actionState, setActionState] = useState(() => {
-    try {
-      const raw = localStorage.getItem(STATUS_KEY);
-      return raw ? JSON.parse(raw) : {};
-    } catch {
-      return {};
-    }
-  });
-
-  useEffect(() => {
-    localStorage.setItem(STATUS_KEY, JSON.stringify(actionState));
-  }, [actionState]);
-
-  const actionsWithState = useMemo(() => {
-    return (cockpit.actions ?? []).map((item) => {
-      const state = actionState[item.id] ?? {};
-      const status = state.status ?? "planned";
-      return {
-        ...item,
-        status,
-        statusLabel: statusMeta[status]?.label ?? status,
-        statusTone: statusMeta[status]?.tone ?? "neu",
-        statusWeight: statusMeta[status]?.weight ?? 25,
-        touchedAt: state.touchedAt ?? null,
-      };
-    });
-  }, [cockpit.actions, actionState]);
-
-  const setStatus = (actionId, status) => {
-    setActionState((prev) => ({
-      ...prev,
-      [actionId]: {
-        ...(prev[actionId] ?? {}),
-        status,
-        touchedAt: new Date().toISOString(),
-      },
-    }));
-  };
-
-  const executionIndex = actionsWithState.length
-    ? clampScore(actionsWithState.reduce((sum, item) => sum + item.statusWeight, 0) / actionsWithState.length)
-    : 0;
-  const targetHitRate = actionsWithState.length
-    ? clampScore(actionsWithState.reduce((sum, item) => sum + Number(item.kpiProgress ?? 0), 0) / actionsWithState.length)
-    : 0;
-
-  const statusCounts = actionsWithState.reduce((acc, item) => {
-    acc[item.status] = (acc[item.status] ?? 0) + 1;
-    return acc;
-  }, {});
-
-  const weeklyDecisions = [...actionsWithState]
-    .sort((a, b) => b.score - a.score || b.kpiProgress - a.kpiProgress)
-    .slice(0, 3);
-
-  const exportWeeklyReport = () => {
-    const lines = [
-      `Nordzucker Weekly Commercial Report (${new Date().toLocaleDateString("de-DE")})`,
-      `Strategie: ${cockpit.strategyMode.title}`,
-      `Opportunity Index: ${cockpit.opportunityIndex}`,
-      `Kundennähe-Index: ${cockpit.customerClosenessIndex}`,
-      `Retention-Risk Index: ${cockpit.retentionRiskIndex}`,
-      `Decision-Confidence: ${cockpit.decisionConfidenceIndex}`,
-      `Execution Index: ${executionIndex}`,
-      `KPI-Zielerreichung: ${targetHitRate}%`,
-      `Action Source: ${cockpit.actionSource}`,
-      `LLM Confidence-Schwelle: ${Math.round((cockpit.governance?.minConfidence ?? 0.62) * 100)}%`,
-      `LLM akzeptierte Maßnahmen: ${cockpit.governance?.acceptedActions ?? 0}, verworfen: ${cockpit.governance?.droppedActions ?? 0}`,
-      cockpit.governance?.runId ? `Audit Run ID: ${cockpit.governance.runId}` : "Audit Run ID: n/a",
-      "",
-      "Top-3 Entscheidungen dieser Woche:",
-      ...weeklyDecisions.map((item, idx) => `${idx + 1}. [${item.priority}] ${item.action} | Status: ${item.statusLabel} | KPI-Fortschritt: ${item.kpiProgress}% | Effekt: ${item.expectedEffect}`),
-    ];
-    dlBlob(`nordzucker_weekly_commercial_report_${new Date().toISOString().slice(0,10)}.txt`, lines.join("\n"), "text/plain;charset=utf-8;");
-  };
-
-  return (
-    <>
-      <p className="lede" style={{ marginBottom: 20 }}>
-        Operatives Cockpit für Marketing und Vertrieb: priorisierte Maßnahmen aus Business-Impact, Themenlage,
-        Quellenfokus und Wettbewerbsdruck. Ziel ist schnelle Aktivierung statt reiner Beobachtung.
-      </p>
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-h">
-          <div>
-            <div className="card-t">KI-Maßnahmen-Engine (Claude)</div>
-            <div className="card-s">
-              Quelle: {cockpit.actionSource === "llm" ? "Live LLM über ai-query" : "Fallback-Heuristik (wenn KI nicht verfügbar)"}
-              {aiState?.updatedAt ? ` · Letztes Update ${new Date(aiState.updatedAt).toLocaleString("de-DE", { hour12:false })}` : ""}
-            </div>
-            <div style={{fontSize:11.5,color:"var(--ink-3)",marginTop:4}}>
-              Governance: min. Confidence {Math.round((cockpit.governance?.minConfidence ?? 0.62) * 100)}% · akzeptiert {cockpit.governance?.acceptedActions ?? 0} · verworfen {cockpit.governance?.droppedActions ?? 0}
-              {cockpit.governance?.runId ? ` · Run ${String(cockpit.governance.runId).slice(0,8)}` : ""}
-            </div>
-          </div>
-          <button className="btn btn-pri" onClick={onRefreshAi} disabled={aiState?.loading}>
-            {aiState?.loading ? <Loader2 size={14} className="spin"/> : <Sparkles size={14}/>} KI-Maßnahmen aktualisieren
-          </button>
-        </div>
-        {aiState?.error && <div style={{fontSize:12.5,color:"var(--neg)"}}>KI-Update fehlgeschlagen: {aiState.error}</div>}
-      </div>
-
-      <div className="grid g-kpi4" style={{ marginBottom: 16 }}>
-        <div className="card kpi">
-          <div className="lab"><TrendingUp size={14} /> Opportunity Index
-            <InfoHint title="Opportunity Index" text="Verdichtet Chancenlage aus Impact, positiver Anteil, Trend und Chancensignalen. Je höher der Wert, desto besser ist das Umfeld für offensive Marketing- und Vertriebsaktivierung." />
-          </div>
-          <div className="val" style={{ color: cockpit.opportunityIndex >= 65 ? "var(--pos)" : cockpit.opportunityIndex >= 45 ? "var(--neu)" : "var(--neg)" }}>{cockpit.opportunityIndex}</div>
-          <span style={{fontSize:11.5,color:"var(--ink-3)"}}>0-100 · Chancenfenster für Aktivierung</span>
-        </div>
-        <div className="card kpi">
-          <div className="lab"><Activity size={14} /> Kundennähe-Index
-            <InfoHint title="Kundennähe-Index" text="Zeigt, wie nah Nordzucker aktuell an den Kundenbedürfnissen liegt. Der Wert kombiniert öffentliche Resonanz, positiven Business-Anteil und Signalbild." />
-          </div>
-          <div className="val" style={{ color: cockpit.customerClosenessIndex >= 62 ? "var(--pos)" : cockpit.customerClosenessIndex >= 46 ? "var(--neu)" : "var(--neg)" }}>{cockpit.customerClosenessIndex}</div>
-          <span style={{fontSize:11.5,color:"var(--ink-3)"}}>0-100 · Nähe zu Markt und Kunden</span>
-        </div>
-        <div className="card kpi">
-          <div className="lab"><ShieldAlert size={14} /> Retention-Risk Index
-            <InfoHint title="Retention-Risk Index" text="Schätzt das Abwanderungsrisiko aus negativen Signalen, Trend und Wettbewerbsdruck. Hohe Werte bedeuten: zuerst Bestandskunden absichern." />
-          </div>
-          <div className="val" style={{ color: cockpit.retentionRiskIndex >= 66 ? "var(--neg)" : cockpit.retentionRiskIndex >= 46 ? "var(--neu)" : "var(--pos)" }}>{cockpit.retentionRiskIndex}</div>
-          <span style={{fontSize:11.5,color:"var(--ink-3)"}}>
-            {cockpit.strongestCompetitor ? `Wettbewerbs-Gap ${signed(cockpit.competitorGap)} vs. ${cockpit.strongestCompetitor.name}` : "kein belastbarer Benchmark"}
-          </span>
-        </div>
-        <div className="card kpi">
-          <div className="lab"><CheckCircle2 size={14} /> Decision-Confidence
-            <InfoHint title="Decision-Confidence" text="Bewertet die Belastbarkeit der Entscheidung aus Datenmenge, Quellendiversität und Stabilität. Unter 50 sollten Maßnahmen eng begleitet validiert werden." />
-          </div>
-          <div className="val" style={{ color: cockpit.decisionConfidenceIndex >= 65 ? "var(--pos)" : cockpit.decisionConfidenceIndex >= 50 ? "var(--neu)" : "var(--neg)" }}>{cockpit.decisionConfidenceIndex}</div>
-          <span style={{fontSize:11.5,color:"var(--ink-3)"}}>0-100 · Qualität der Entscheidungsbasis</span>
-        </div>
-      </div>
-
-      <div className="grid g-3" style={{ marginBottom: 16 }}>
-        <div className="card kpi">
-          <div className="lab"><Activity size={14} /> Execution Index</div>
-          <div className="val" style={{ color: executionIndex >= 70 ? "var(--pos)" : executionIndex >= 45 ? "var(--neu)" : "var(--neg)" }}>{executionIndex}</div>
-          <span style={{fontSize:11.5,color:"var(--ink-3)"}}>Umsetzungsgrad über alle Maßnahmen</span>
-        </div>
-        <div className="card kpi">
-          <div className="lab"><CheckCircle2 size={14} /> KPI-Zielerreichung</div>
-          <div className="val" style={{ color: targetHitRate >= 70 ? "var(--pos)" : targetHitRate >= 45 ? "var(--neu)" : "var(--neg)" }}>{targetHitRate}%</div>
-          <span style={{fontSize:11.5,color:"var(--ink-3)"}}>Automatisch aus Maßnahmen-KPI-Fortschritt berechnet</span>
-        </div>
-        <div className="card kpi">
-          <div className="lab"><Users size={14} /> Maßnahmenstatus</div>
-          <div className="val">{actionsWithState.length}</div>
-          <span style={{fontSize:11.5,color:"var(--ink-3)"}}>
-            {statusCounts.effective ?? 0} wirksam · {statusCounts.in_progress ?? 0} in Umsetzung · {statusCounts.planned ?? 0} geplant
-          </span>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-h"><div className="tt"><div className="card-t">Empfohlene Commercial-Strategie</div>
-          <InfoHint title="Commercial-Strategie" text="Leitet aus Opportunity, Kundennähe und Retention-Risk die operative Steuerungsrichtung für Marketing und Vertrieb ab." />
-        </div></div>
-        <div className="signal" style={{padding:"12px 13px"}}>
-          <span className="bar" style={{background:cockpit.strategyMode.tone}}/>
-          <div>
-            <h4 style={{marginBottom:6,color:cockpit.strategyMode.tone}}>{cockpit.strategyMode.title}</h4>
-            <p>{cockpit.strategyMode.text}</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid g-split-2-1" style={{ marginBottom: 16 }}>
-        <div className="card">
-          <div className="card-h"><div className="tt"><div className="card-t">Commercial Playbook</div>
-            <InfoHint title="Commercial Playbook" text="Sortiert Aktionen nach Wirkung und Dringlichkeit. Jede Maßnahme enthält Trigger, Owner und Ziel-KPI, damit Marketing und Vertrieb direkt ausführen können." />
-          </div>
-            <button className="btn" onClick={exportWeeklyReport}><Download size={14}/> Weekly Report</button>
-          </div>
-          <div className="tbl-shell tbl-scroll">
-            <table className="tbl tbl-wide">
-              <thead>
-                <tr><th>Score</th><th>Prio</th><th>Status</th><th>Owner</th><th>Horizont</th><th>Ziel</th><th>Trigger</th><th>Maßnahme</th><th>Erwarteter Effekt</th><th>Ziel-KPI</th><th>KPI Fortschritt</th><th>KI Confidence</th><th>Belege</th></tr>
-              </thead>
-              <tbody>
-                {actionsWithState.map((item, idx) => (
-                  <tr key={`${item.action}-${idx}`}>
-                    <td style={{fontWeight:700}}>{item.score}</td>
-                    <td><span className={`pill ${item.priority === "Hoch" ? "neg" : "neu"}`}>{item.priority}</span></td>
-                    <td>
-                      <select
-                        value={item.status}
-                        onChange={(e) => setStatus(item.id, e.target.value)}
-                        style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "5px 7px", font: "inherit", fontSize: 12 }}
-                      >
-                        <option value="planned">Geplant</option>
-                        <option value="in_progress">In Umsetzung</option>
-                        <option value="effective">Wirksam</option>
-                        <option value="stopped">Gestoppt</option>
-                      </select>
-                    </td>
-                    <td>{item.owner}</td>
-                    <td>{item.horizon}</td>
-                    <td>{item.objective}</td>
-                    <td>{item.trigger}</td>
-                    <td style={{fontWeight:600}}>{item.action}</td>
-                    <td>{item.expectedEffect}</td>
-                    <td>
-                      <div>{item.kpi}</div>
-                      <div style={{fontSize:11,color:"var(--ink-3)",marginTop:3}}>{item.kpiCurrent}</div>
-                    </td>
-                    <td style={{minWidth:120}}>
-                      <div style={{fontWeight:700,color:item.kpiProgress >= 70 ? "var(--pos)" : item.kpiProgress >= 45 ? "var(--neu)" : "var(--neg)"}}>{item.kpiProgress}%</div>
-                      <div style={{height:6,borderRadius:999,background:"var(--line-2)",overflow:"hidden",marginTop:4}}>
-                        <span style={{display:"block",height:"100%",width:`${item.kpiProgress}%`,background:item.kpiProgress >= 70 ? "var(--pos)" : item.kpiProgress >= 45 ? "var(--neu)" : "var(--neg)"}}/>
-                      </div>
-                    </td>
-                    <td>
-                      {cockpit.actionSource === "llm"
-                        ? `${Math.round(Number(item.confidence ?? 0) * 100)}%`
-                        : "n/a"}
-                    </td>
-                    <td style={{fontSize:11.5,color:"var(--ink-2)",maxWidth:260}}>
-                      {Array.isArray(item.evidence) && item.evidence.length
-                        ? item.evidence.slice(0, 2).map((e, i) => <div key={i} style={{marginBottom:4}}>{e}</div>)
-                        : (Array.isArray(item.evidenceRefs) && item.evidenceRefs.length ? `Kontext: ${item.evidenceRefs.map((v) => `[${v}]`).join(", ")}` : "n/a")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-h"><div className="tt"><div className="card-t">Wochen-Checkliste</div>
-            <InfoHint title="Wochen-Checkliste" text="Fixe Commercial-Routine zur Umsetzung: Trigger validieren, Maßnahmen freigeben, KPI-Wirkung messen und bei Bedarf nachsteuern." />
-          </div></div>
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {cockpit.watchlist.map((line, idx) => (
-              <div key={idx} className="signal" style={{padding:"11px 12px"}}>
-                <span className="bar" style={{background:"var(--nz-500)"}}/>
-                <div style={{fontSize:12.5,color:"var(--ink-2)",lineHeight:1.5}}>{line}</div>
-              </div>
-            ))}
-            <div className="ai-card" style={{borderLeftColor:"var(--nz-500)"}}>
-              <h4>Empfohlener Ablauf je Woche</h4>
-              <p>Montag: Trigger review · Dienstag: Maßnahmen-Commitment · Donnerstag: Kampagnen-Check · Freitag: KPI-Auswertung und Entscheidung für nächste Woche.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
 
 /* =========================  ROOT APP  ========================= */
 const NAV = [
   { id:"dashboard", label:"Dashboard", icon:LayoutDashboard, sec:"Übersicht" },
   { id:"trends",    label:"Trends & Risiken", icon:TrendingUp, sec:"Übersicht" },
   { id:"bi",        label:"BI Cube", icon:FileText, sec:"Übersicht" },
-  { id:"commercial",label:"Marketing & Vertrieb", icon:TrendingUp, sec:"Analyse" },
-  { id:"comp",      label:"Wettbewerb", icon:Users, sec:"Analyse" },
   { id:"recs",      label:"Empfehlungen & Prognosen", icon:Lightbulb, sec:"Analyse" },
   { id:"chat",      label:"KI-Assistent", icon:MessageSquare, sec:"Analyse" },
   { id:"sources",   label:"Datenquellen", icon:Database, sec:"System" },
@@ -2727,8 +2257,7 @@ const NAV = [
 const TITLES = {
   dashboard:["Übersicht","Stimmungs-Dashboard"], trends:["Übersicht","Trends & Risiken"],
   bi:["Übersicht","BI Cube & Dimensionen"],
-  commercial:["Analyse","Marketing- & Vertriebscockpit"],
-  comp:["Analyse","Wettbewerbs-Benchmarking"], recs:["Analyse","Empfehlungen & Prognosen"],
+  recs:["Analyse","Empfehlungen & Prognosen"],
   chat:["Analyse","KI-Assistent"], sources:["System","Datenquellen & Schnittstellen"],
 };
 
@@ -2740,13 +2269,11 @@ export default function App(){
   const [range, setRange] = useState(7);
   const [open, setOpen] = useState(false);
   const [mentions, setMentions] = useState([]);
-  const [comp, setComp] = useState(null);
   const [sourceHealth, setSourceHealth] = useState([]);
   const [appSettings, setAppSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [refreshTick, setRefreshTick] = useState(0);
-  const [commercialAi, setCommercialAi] = useState({ loading: false, error: "", updatedAt: null, data: null });
   const [sec, title] = TITLES[view];
 
   useEffect(()=>{ (async()=>{
@@ -2774,14 +2301,12 @@ export default function App(){
       }
 
       // Schneller Start: 30 Tage reichen für alle aktuellen Dashboard-Filter.
-      const [data, competitors, sourceStatus, settings] = await Promise.all([
+      const [data, sourceStatus, settings] = await Promise.all([
         loadMentions(SOURCE_HEALTH_WINDOW_DAYS),
-        loadCompetitors(SOURCE_HEALTH_WINDOW_DAYS),
         loadSourceHealth(SOURCE_HEALTH_WINDOW_DAYS).catch(() => []),
         loadAppSettings().catch(() => ({})),
       ]);
       setMentions(data);
-      setComp(competitors);
       setSourceHealth(sourceStatus);
       setAppSettings(settings);
       localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), mentions: data }));
@@ -2812,9 +2337,9 @@ export default function App(){
     [mentions, range, appSettings, topicCatalog],
   );
   const biMentions = useMemo(() => mentions.map(enrichMentionForBI), [mentions]);
-  const scopedComp = useMemo(
-    () => buildCompetitionWindow(comp, range),
-    [comp, range],
+  const flavorInsights = useMemo(
+    () => buildFlavorInsights(mentions, range),
+    [mentions, range],
   );
   const activeSourceLabel = useMemo(() => {
     if (!LIVE) return "Demo-Daten aktiv";
@@ -2840,7 +2365,6 @@ export default function App(){
   const dataSummary = useMemo(()=>{
     if (!agg) return "";
     const topics = agg.byTopic.slice(0,6).map(t=>`${t.label}: Impact ${t.net>0?"+":""}${t.net} (${t.vol} Erw.)`).join("; ");
-    const compTxt = scopedComp ? scopedComp.names.map(n=>`${n.name}: ${scopedComp.series[scopedComp.series.length-1]?.[n.id] ?? 0}, SoV ${n.sov}%`).join("; ") : "";
     const signalTxt = liveSignals.length
       ? liveSignals.map((s, i) => `(${i + 1}) ${s.title}`).join("; ")
       : "keine belastbaren Signale im aktuellen Fenster";
@@ -2850,83 +2374,24 @@ Geschäftsauswirkung für Nordzucker: ${agg.curNet} (Δ ${agg.netDelta} ggü. Vo
 Erwähnungen: ${agg.curVol} (Δ ${agg.volDelta}%). Geschäftlich positiver Anteil: ${agg.posShare}%.
 Geschäftsauswirkung nach Thema: ${topics}.
 Aktive Signale: ${signalTxt}.
-Wettbewerb (Markenstimmung & Share of Voice): ${compTxt}.`;
-  }, [agg, range, scopedComp, liveSignals]);
-
+Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row) => `${titleFlavor(row.flavor)} (${row.count})`).join("; ") || "keine"}.`;
+  }, [agg, range, liveSignals, flavorInsights]);
   const exportReport = useMemo(
-    () => buildExportReport({ agg, comp: scopedComp, liveSignals, range, title, view }),
-    [agg, scopedComp, liveSignals, range, title, view],
+    () => buildExportReport({ agg, liveSignals, range, title, view }),
+    [agg, liveSignals, range, title, view],
   );
-  const commercialCockpit = useMemo(
-    () => buildCommercialCockpit({ agg, comp: scopedComp, signals: liveSignals, range, mentions, aiResult: commercialAi.data }),
-    [agg, scopedComp, liveSignals, range, mentions, commercialAi.data],
-  );
-
-  const refreshCommercialAi = async () => {
-    if (!agg) return;
-    if (!LIVE) {
-      setCommercialAi((prev) => ({ ...prev, error: "Live-Backend nicht verbunden. KI-Maßnahmen benötigen ai-query.", loading: false }));
-      return;
-    }
-    setCommercialAi((prev) => ({ ...prev, loading: true, error: "" }));
-    try {
-      const data = await aiCommercialActions(dataSummary);
-      setCommercialAi({ loading: false, error: "", updatedAt: new Date().toISOString(), data });
-    } catch (e) {
-      setCommercialAi((prev) => ({ ...prev, loading: false, error: String(e?.message || e) }));
-    }
-  };
-
-  useEffect(() => {
-    if (view !== "commercial") return;
-    if (!agg || !LIVE) return;
-    const ageMs = commercialAi.updatedAt ? (Date.now() - new Date(commercialAi.updatedAt).getTime()) : Number.POSITIVE_INFINITY;
-    if (commercialAi.loading) return;
-    if (commercialAi.data && ageMs < 10 * 60 * 1000) return;
-    refreshCommercialAi();
-  }, [view, agg, LIVE, range]);
 
   const exportCSV = () => {
     if (!agg || !exportReport) return;
     let rows = [];
     let fileName = `nordzucker_mentions_${range}t.csv`;
-    if (view==="comp"){
-      if (!scopedComp) return;
-      rows = scopedComp.names.map(n=>({ Hersteller:n.name, NettoStimmung:scopedComp.series[scopedComp.series.length-1]?.[n.id] ?? 0, ShareOfVoice_Pct:n.sov }));
-      fileName = "nordzucker_wettbewerb.csv";
-    } else if (view==="bi"){
+    if (view==="bi"){
       rows = biMentions.map(m=>(
         { Datum:m.date.toISOString().slice(0,10), Quartal:m.quarter, Region:m.region, Produkt:m.product,
           Quelle:m.source, Thema:m.topicLabel, BusinessImpact:m.sentiment, BusinessLabel:m.sentimentLabel,
           PublicSentiment:m.publicSentiment, PublicLabel:m.publicSentimentLabel, ImpactReason:m.impactReason, Text:m.text }
       ));
       fileName = "nordzucker_bi_cube.csv";
-    } else if (view==="commercial"){
-      const statusKey = "scf_commercial_action_status_v1";
-      let exportStatus = {};
-      try {
-        exportStatus = JSON.parse(localStorage.getItem(statusKey) || "{}");
-      } catch {
-        exportStatus = {};
-      }
-      rows = (commercialCockpit?.actions ?? []).map((item) => ({
-        Score: item.score,
-        Priorität: item.priority,
-        Status: exportStatus[item.id]?.status ?? "planned",
-        Owner: item.owner,
-        Horizont: item.horizon,
-        Ziel: item.objective,
-        Trigger: item.trigger,
-        Maßnahme: item.action,
-        ErwarteterEffekt: item.expectedEffect,
-        ZielKPI: item.kpi,
-        KPIFortschritt_Pct: item.kpiProgress ?? 0,
-        KPIIstwert: item.kpiCurrent,
-        KIConfidence_Pct: item.confidence != null ? Math.round(Number(item.confidence) * 100) : null,
-        BelegReferenzen: Array.isArray(item.evidenceRefs) && item.evidenceRefs.length ? item.evidenceRefs.join("|") : "",
-        Kanalfokus: item.channel,
-      }));
-      fileName = "nordzucker_marketing_vertrieb_cockpit.csv";
     } else {
       rows = agg.cur.map(m=>({ Datum:m.date.toISOString().slice(0,10), Quelle:m.source, Autor:m.author,
         Thema:m.topicLabel, BusinessImpact:m.sentiment, BusinessLabel:m.sentimentLabel,
@@ -3136,11 +2601,9 @@ Wettbewerb (Markenstimmung & Share of Voice): ${compTxt}.`;
             </div></div>
           ) : (
             <>
-              {view==="dashboard" && <Dashboard agg={agg} range={range} signals={liveSignals}/>}
+              {view==="dashboard" && <Dashboard agg={agg} range={range} signals={liveSignals} flavorInsights={flavorInsights}/>} 
               {view==="trends"    && <Trends mentions={mentions} range={range} signals={liveSignals} appSettings={appSettings} topicCatalog={topicCatalog}/>}
               {view==="bi"        && <BICube mentions={biMentions}/>}
-              {view==="commercial"&& <CommercialCockpit agg={agg} range={range} cockpit={commercialCockpit} aiState={commercialAi} onRefreshAi={refreshCommercialAi}/>}
-              {view==="comp"      && <Competition onExport={exportCSV} comp={scopedComp} range={range}/>}
               {view==="recs"      && <Recommendations dataSummary={dataSummary}/>}
               {view==="chat"      && <Assistant dataSummary={dataSummary}/>}
               {view==="sources"   && <Sources sourceHealth={sourceHealth} appSettings={appSettings} onSaveSettings={handleSaveSettings}/>} 
