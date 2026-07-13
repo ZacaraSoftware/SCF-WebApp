@@ -19,7 +19,7 @@ Quellen (Reddit/News/YouTube/Facebook/Instagram)   Frontend (React, Vercel)
    pg_cron (alle 6 h)                                    │
         ▼                                                ▼
         └──────────────►  Postgres + pgvector  ◄─────────┘
-              mentions · embeddings
+                          mentions · embeddings · competitor_metrics
 ```
 
 Der **Anthropic-Key liegt ausschließlich serverseitig**. Das Frontend ruft nie direkt
@@ -92,7 +92,8 @@ Danach läuft die Aufnahme automatisch alle 6 h (anpassbar in der Migration:
 2. Im Artifact die Demo-Funktionen ersetzen:
    - `ingestAll(range)` → Import aus `dataClient.ts` (gleiche Rückgabeform, `aggregate()` bleibt).
    - `askAI(...)` im KI-Assistenten → `ragChat(messages)`.
-  - In *Empfehlungen & Prognosen* → `ragRecommendations(summary)`.
+   - In *Empfehlungen & Prognosen* → `ragRecommendations(summary)`.
+   - Wettbewerb → `fetchCompetitors()`.
 3. `.env` mit `VITE_SUPABASE_URL` und `VITE_SUPABASE_ANON_KEY`.
 4. Deploy z. B. auf Vercel; CORS-Origin in `_shared/cors.ts` auf die Domain einschränken.
 

@@ -6,15 +6,14 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from "recharts";
 import {
-  LayoutDashboard, TrendingUp, Lightbulb, MessageSquare, Plug,
+  LayoutDashboard, TrendingUp, Users, Lightbulb, MessageSquare, Plug,
   Download, FileText, AlertTriangle, ArrowUpRight, ArrowDownRight,
   Sparkles, Menu, X, Sun, ShieldAlert, Activity, CheckCircle2,
-  Send, Loader2, Database, Minus, Info,
+  Send, Loader2, Database, Minus,
 } from "lucide-react";
 import {
-  loadMentions, loadSourceHealth, aiChat, aiRecommendations,
+  loadMentions, loadCompetitors, loadSourceHealth, aiChat, aiRecommendations,
   LIVE, SOURCES, TOPICS, ANCHOR, DAYMS, SOURCE_INFO, loadAppSettings, saveAppSettings, loadYoutubeTermStats,
-  aiConversationHistory, aiConversationMessages,
 } from "./data";
 import { YoutubeQuotaWidget } from "./YoutubeQuotaWidget";
 
@@ -28,14 +27,8 @@ import { YoutubeQuotaWidget } from "./YoutubeQuotaWidget";
  *    Mentions aus Postgres, KI-Antworten über die ai-query Edge Function.
  * ------------------------------------------------------------------ */
 
-/* Auswertungen enden immer am letzten abgeschlossenen Tag (gestern), um Teiltag-Effekte zu vermeiden. */
-const REPORT_GENERATED_AT = LIVE ? new Date() : ANCHOR;
-const WINDOW_END_EXCLUSIVE = (() => {
-  const d = LIVE ? new Date() : new Date(ANCHOR);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-})();
-const WINDOW_LAST_COMPLETE_DAY = new Date(WINDOW_END_EXCLUSIVE - DAYMS);
+/* Bezugszeitpunkt: im Demo-Modus fix (für stabile Daten), live = jetzt. */
+const NOW = LIVE ? new Date() : ANCHOR;
 
 const DEFAULT_TOPIC_COLORS = {
   zuckersteuer: "#e1a53a",
@@ -53,12 +46,10 @@ const DEFAULT_SOURCE_COLORS = {
   reddit: "#004b93",
   youtube: "#e0574a",
   news: "#6d5ce7",
-  twitter: "#0f172a",
   instagram: "#16a37b",
 };
 
 const DEFAULT_SOURCE_PRIORITY = {
-  twitter: 5,
   reddit: 10,
   youtube: 20,
   news: 30,
@@ -161,10 +152,6 @@ function draftSourceCatalog(appSettings, sourceHealth) {
   }));
 }
 function topicLabelFromId(topicId) {
-  const normalized = String(topicId ?? "").trim().toLowerCase();
-  if (!normalized || ["unknown", "uncategorized", "other", "misc"].includes(normalized)) {
-    return "Sonstiges (Nicht klassifiziert)";
-  }
   return String(topicId ?? "")
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ")
@@ -272,18 +259,6 @@ const STYLE = `
 .delta.down{color:var(--neg);background:var(--neg-bg)}
 .delta.flat{color:var(--ink-2);background:var(--line-2)}
 .kpi-ico{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none}
-.tt{display:flex;align-items:center;gap:6px;min-width:0}
-details.info-wrap{position:relative;display:inline-flex}
-details.info-wrap > summary{list-style:none}
-details.info-wrap > summary::-webkit-details-marker{display:none}
-.info-btn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:999px;
-  border:1px solid var(--line);background:#fff;color:var(--ink-3);cursor:pointer;transition:.12s}
-.info-btn:hover{color:var(--nz-700);border-color:var(--nz-500)}
-.info-pop{position:absolute;top:calc(100% + 8px);right:0;z-index:40;width:min(320px,78vw);background:#fff;
-  border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow-l);padding:10px 11px}
-details.info-wrap.left .info-pop{left:0;right:auto}
-.info-pop .t{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin-bottom:4px}
-.info-pop p{margin:0;font-size:12px;line-height:1.5;color:var(--ink-2)}
 
 /* sentiment pill */
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
@@ -538,22 +513,21 @@ const signed = (n) => `${n > 0 ? "+" : ""}${n}`;
 const priorityRank = { Hoch: 3, Mittel: 2, Niedrig: 1 };
 const clampScore = (n) => Math.max(0, Math.min(100, Math.round(n)));
 
-function sentimentAxisDomain(series) {
-  const values = (series ?? [])
-    .map((row) => Number(row?.net))
-    .filter((value) => Number.isFinite(value));
-  const maxAbs = values.length
-    ? Math.max(...values.map((value) => Math.abs(value)))
-    : 0;
-  const bound = Math.max(10, Math.ceil(maxAbs / 10) * 10);
-  return [-bound, bound];
-}
-
-function buildExportReport({ agg, liveSignals, range, title, view }) {
+function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
   if (!agg) return null;
 
   const topTopicByVolume = agg.byTopic[0] ?? null;
   const biggestRisk = [...agg.byTopic].sort((a, b) => a.net - b.net)[0] ?? null;
+  const latestComp = comp?.series?.[comp.series.length - 1] ?? {};
+  const topCompetitor = comp?.names?.length
+    ? [...comp.names]
+      .map((item) => ({
+        name: item.name,
+        score: Number(latestComp[item.id] ?? 0),
+        sov: Number(item.sov ?? 0),
+      }))
+      .sort((a, b) => b.score - a.score || b.sov - a.sov)[0]
+    : null;
 
   const topicById = Object.fromEntries((agg.byTopic ?? []).map((topic) => [topic.id, topic]));
   const recommendations = [];
@@ -573,7 +547,7 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
       owner: "Marketing + Vertrieb",
       horizon: "0-14 Tage",
       action: "Defensive Kommunikation im Kernsortiment starten",
-      reason: `Business Impact liegt bei ${signed(agg.curNet)} und signalisiert kurzfristiges Umsatzrisiko für Nordzucker-Produkte.`,
+      reason: `Business Impact liegt bei ${signed(agg.curNet)} und signalisiert kurzfristiges Umsatzrisiko fuer Nordzucker-Produkte.`,
       successKpi: "Business Impact >= 0",
       score,
     });
@@ -587,7 +561,7 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
       owner: "Category Management",
       horizon: "0-7 Tage",
       action: "Narrativ zu Zuckerfrei gegen Nordzucker-Portfolio absichern",
-      reason: `Thema Zuckerfrei zeigt ${signed(sugarFree.net)} bei ${sugarFree.vol} Erwähnungen und drueckt den produktbezogenen Outcome.`,
+      reason: `Thema Zuckerfrei zeigt ${signed(sugarFree.net)} bei ${sugarFree.vol} Erwaehnungen und drueckt den produktbezogenen Outcome.`,
       successKpi: "Impact Zuckerfrei > -10",
       score,
     });
@@ -601,7 +575,7 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
       owner: "B2B Sales",
       horizon: "0-14 Tage",
       action: "Softdrink-Accounts mit Value-Story aktivieren",
-      reason: `Softdrinks liegt bei ${signed(softdrinks.net)} und weist auf erhöhtes Abwanderungsrisiko im B2B-Kanal hin.`,
+      reason: `Softdrinks liegt bei ${signed(softdrinks.net)} und weist auf erhoehtes Abwanderungsrisiko im B2B-Kanal hin.`,
       successKpi: "Impact Softdrinks > 0",
       score,
     });
@@ -615,7 +589,7 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
       owner: "Pricing + Vertrieb",
       horizon: "14-30 Tage",
       action: "Preis-Leistungs-Botschaft offensiv in Key Accounts platzieren",
-      reason: `Preise erreicht ${signed(preise.net)} bei ${preise.vol} Erwähnungen und kann für Margin-stabile Deals genutzt werden.`,
+      reason: `Preise erreicht ${signed(preise.net)} bei ${preise.vol} Erwaehnungen und kann fuer Margin-stabile Deals genutzt werden.`,
       successKpi: "Share positiver Preis-Mentions >= 35%",
       score,
     });
@@ -629,7 +603,7 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
       owner: "Demand Planning",
       horizon: "7-21 Tage",
       action: "Saisonale Kampagnen auf volumenstarke Segmente ausrollen",
-      reason: `Saisonal erreicht ${signed(seasonal.net)} bei ${seasonal.vol} Erwähnungen und zeigt ein skalierbares Nachfragefenster.`,
+      reason: `Saisonal erreicht ${signed(seasonal.net)} bei ${seasonal.vol} Erwaehnungen und zeigt ein skalierbares Nachfragefenster.`,
       successKpi: "Saison-Volumen +15%",
       score,
     });
@@ -642,8 +616,21 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
       owner: "Corporate Communications",
       horizon: "0-7 Tage",
       action: `Thema ${biggestRisk.label} mit Gegenbotschaft besetzen`,
-      reason: `Thema hat Impact ${signed(biggestRisk.net)} bei ${biggestRisk.vol} Erwähnungen im Zeitraum und beeinflusst Kaufbereitschaft negativ.`,
+      reason: `Thema hat Impact ${signed(biggestRisk.net)} bei ${biggestRisk.vol} Erwaehnungen im Zeitraum und beeinflusst Kaufbereitschaft negativ.`,
       successKpi: `Impact ${biggestRisk.label} +10 Punkte`,
+      score,
+    });
+  }
+
+  if (topCompetitor && topCompetitor.score > agg.curNet + 10) {
+    const score = 60 + Math.min(30, (topCompetitor.score - agg.curNet));
+    pushRecommendation({
+      priority: "Mittel",
+      owner: "Competitive Intelligence",
+      horizon: "14-30 Tage",
+      action: `Wettbewerber ${topCompetitor.name} kommunikativ kontern`,
+      reason: `Wettbewerber erreicht ${signed(topCompetitor.score)} bei ${topCompetitor.sov}% Share of Voice und liegt deutlich ueber Nordzucker.`,
+      successKpi: "Gap im Net-Impact < 5 Punkte",
       score,
     });
   }
@@ -675,6 +662,7 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
   }
 
   const viewBoost = (item) => {
+    if (view === "comp" && item.owner === "Competitive Intelligence") return 10;
     if (view === "bi" && (item.owner === "Category Management" || item.owner === "Pricing + Vertrieb")) return 8;
     if (view === "trends" && item.owner === "Market Intelligence") return 10;
     if (view === "dashboard" && item.priority === "Hoch") return 6;
@@ -695,15 +683,15 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
     }
     if (agg.curNet <= -5 || agg.netDelta <= -10) {
       return {
-        label: "Rot - Sofortmaßnahmen noetig",
+        label: "Rot - Sofortmassnahmen noetig",
         tone: "red",
-        detail: "Negative Signale überwiegen. Kurzfristige Gegensteuerung ist für Absatzschutz erforderlich.",
+        detail: "Negative Signale ueberwiegen. Kurzfristige Gegensteuerung ist fuer Absatzschutz erforderlich.",
       };
     }
     return {
       label: "Gelb - Eng monitoren",
       tone: "amber",
-      detail: "Gemischte Lage. Chancen vorhanden, aber Themenrisiken müssen eng operativ geführt werden.",
+      detail: "Gemischte Lage. Chancen vorhanden, aber Themenrisiken muessen eng operativ gefuehrt werden.",
     };
   })();
 
@@ -732,16 +720,19 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
   const summaryRows = [
     ["Report", title],
     ["Zeitraum", `Letzte ${range} Tage`],
-    ["Report-Fokus", view === "bi" ? "BI Steuerung" : view === "trends" ? "Risiko- und Signalfrüherkennung" : "Management Snapshot"],
+    ["Report-Fokus", view === "comp" ? "Wettbewerb" : view === "bi" ? "BI Steuerung" : view === "trends" ? "Risiko- und Signalfrueherkennung" : "Management Snapshot"],
     ["Business Impact (Net)", `${signed(agg.curNet)} (Delta ${signed(agg.netDelta)})`],
     ["Public Sentiment (Net)", `${signed(agg.curPublicNet)} (Delta ${signed(agg.publicNetDelta)})`],
-    ["Erwähnungen", `${agg.curVol} (Delta ${signed(agg.volDelta)}%)`],
+    ["Erwaehnungen", `${agg.curVol} (Delta ${signed(agg.volDelta)}%)`],
     ["Positiver Business-Anteil", `${agg.posShare}%`],
     ["Top-Thema nach Volumen", topTopicByVolume ? `${topTopicByVolume.label} (${topTopicByVolume.vol})` : "n/a"],
   ];
+  if (topCompetitor) {
+    summaryRows.push(["Staerkster Wettbewerber", `${topCompetitor.name} (${signed(topCompetitor.score)}, SoV ${topCompetitor.sov}%)`]);
+  }
 
   return {
-    generatedAt: REPORT_GENERATED_AT.toLocaleDateString("de-DE"),
+    generatedAt: NOW.toLocaleDateString("de-DE"),
     summaryRows,
     status,
     actionPlan,
@@ -809,10 +800,9 @@ const enrichMentionForBI = (m) => ({
 
 /* aggregate metrics for a window */
 function aggregate(mentions, range, topicCatalog){
-  const endExclusive = WINDOW_END_EXCLUSIVE;
-  const cut = endExclusive - range * DAYMS;
+  const cut = NOW.getTime() - range * DAYMS;
   const prevCut = cut - range * DAYMS;
-  const cur = mentions.filter(m => m.ts >= cut && m.ts < endExclusive);
+  const cur = mentions.filter(m => m.ts >= cut);
   const prev = mentions.filter(m => m.ts < cut && m.ts >= prevCut);
   const impactNet = arr => arr.length ? +(arr.reduce((s,m)=>s+m.sentiment,0)/arr.length*100).toFixed(0) : 0;
   const publicNet = arr => arr.length ? +(arr.reduce((s,m)=>s+(m.publicSentiment ?? m.sentiment),0)/arr.length*100).toFixed(0) : 0;
@@ -826,7 +816,7 @@ function aggregate(mentions, range, topicCatalog){
   cur.forEach(m => { const k = dateLabel(m.date); (byDay[k] ??= []).push(m.sentiment); });
   const series = [];
   for (let d = range-1; d >= 0; d--){
-    const day = new Date(endExclusive - (d + 1) * DAYMS); const k = dateLabel(day);
+    const day = new Date(NOW.getTime() - d*DAYMS); const k = dateLabel(day);
     const vals = byDay[k] || [];
     series.push({ day:k, net: vals.length ? +(vals.reduce((a,b)=>a+b,0)/vals.length*100).toFixed(0):0, vol: vals.length });
   }
@@ -850,124 +840,15 @@ function aggregate(mentions, range, topicCatalog){
   };
 }
 
-const KNOWN_FLAVORS = [
-  "limette", "zitrone", "orange", "cola", "vanille", "erdbeere", "kirsche", "himbeere", "apfel", "mango", "pfirsich", "ingwer", "minze",
-];
-
-function normalizeFlavorName(value) {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized || normalized === "none" || normalized === "unknown") return "";
-  const aliases = {
-    lime: "limette",
-    limette: "limette",
-    lemon: "zitrone",
-    zitrone: "zitrone",
-    cola: "cola",
-    vanilla: "vanille",
-    vanille: "vanille",
-    strawberry: "erdbeere",
-    erdbeere: "erdbeere",
-    cherry: "kirsche",
-    kirsche: "kirsche",
-    raspberry: "himbeere",
-    himbeere: "himbeere",
-    apple: "apfel",
-    apfel: "apfel",
-  };
-  return aliases[normalized] ?? normalized;
-}
-
-function titleFlavor(value) {
-  const normalized = normalizeFlavorName(value);
-  if (!normalized) return "n/a";
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
-}
-
-function flavorCandidatesFromMention(mention) {
-  const candidates = [];
-  const primary = normalizeFlavorName(mention?.primaryFlavor);
-  if (primary) candidates.push(primary);
-
-  const tags = Array.isArray(mention?.flavorTags) ? mention.flavorTags : [];
-  for (const tag of tags) {
-    const norm = normalizeFlavorName(tag);
-    if (norm) candidates.push(norm);
-  }
-
-  if (candidates.length === 0) {
-    const text = `${mention?.text ?? ""} ${mention?.topicLabel ?? ""}`.toLowerCase();
-    for (const flavor of KNOWN_FLAVORS) {
-      if (text.includes(flavor)) candidates.push(flavor);
-    }
-  }
-
-  return Array.from(new Set(candidates));
-}
-
-function buildFlavorInsights(mentions, range) {
-  const endExclusive = WINDOW_END_EXCLUSIVE;
-  const rangeCut = endExclusive - range * DAYMS;
-  const summerStart = Date.UTC(WINDOW_LAST_COMPLETE_DAY.getFullYear(), 5, 1);
-  const summerEnd = Date.UTC(WINDOW_LAST_COMPLETE_DAY.getFullYear(), 8, 1);
-
-  const relevant = (mentions ?? []).filter((m) => m.ts >= rangeCut && m.ts < endExclusive);
-  const sourceScoped = relevant.filter((m) => m.source === "youtube" || m.source === "news");
-  const summerScoped = sourceScoped.filter((m) => m.ts >= summerStart && m.ts < summerEnd);
-
-  const bucket = new Map();
-  for (const mention of sourceScoped) {
-    const flavors = flavorCandidatesFromMention(mention);
-    for (const flavor of flavors) {
-      const slot = bucket.get(flavor) ?? { flavor, count: 0, sumPublic: 0, youtube: 0, news: 0 };
-      slot.count += 1;
-      slot.sumPublic += Number(mention.publicSentiment ?? mention.sentiment ?? 0);
-      if (mention.source === "youtube") slot.youtube += 1;
-      if (mention.source === "news") slot.news += 1;
-      bucket.set(flavor, slot);
-    }
-  }
-
-  const ranked = Array.from(bucket.values())
-    .map((entry) => ({
-      ...entry,
-      net: entry.count > 0 ? Math.round((entry.sumPublic / entry.count) * 100) : 0,
-    }))
-    .sort((a, b) => b.count - a.count || b.net - a.net);
-
-  const summerBucket = new Map();
-  for (const mention of summerScoped) {
-    const flavors = flavorCandidatesFromMention(mention);
-    for (const flavor of flavors) {
-      summerBucket.set(flavor, (summerBucket.get(flavor) ?? 0) + 1);
-    }
-  }
-  const summerTop = Array.from(summerBucket.entries()).sort((a, b) => b[1] - a[1])[0] ?? null;
-
-  return {
-    totalMentions: sourceScoped.length,
-    ranked,
-    top: ranked[0] ?? null,
-    summerTop: summerTop ? { flavor: summerTop[0], count: summerTop[1] } : null,
-  };
-}
-
 function topicWindowStats(mentions, range, topicCatalog) {
-  const endExclusive = WINDOW_END_EXCLUSIVE;
-  const cut = endExclusive - range * DAYMS;
+  const cut = NOW.getTime() - range * DAYMS;
   const prevCut = cut - range * DAYMS;
   const avgSent = (arr) => arr.length
     ? +(arr.reduce((sum, m) => sum + (m.sentiment || 0), 0) / arr.length).toFixed(2)
     : 0;
 
   return topicCatalog.map((t) => {
-    const curItems = mentions.filter((m) => m.topic === t.id && m.ts >= cut && m.ts < endExclusive);
+    const curItems = mentions.filter((m) => m.topic === t.id && m.ts >= cut);
     const prevItems = mentions.filter((m) => m.topic === t.id && m.ts < cut && m.ts >= prevCut);
     const curVol = curItems.length;
     const prevVol = prevItems.length;
@@ -997,9 +878,8 @@ const DEFAULT_SIGNAL_CONFIG = {
 const DEFAULT_TREND_FOCUS_TOPICS = ["saisonal", "softdrinks", "zuckersteuer", "gesundheit"];
 
 function deriveSignals(mentions, range, appSettings, topicCatalog) {
-  const endExclusive = WINDOW_END_EXCLUSIVE;
-  const cut = endExclusive - range * DAYMS;
-  const curMentions = mentions.filter((m) => m.ts >= cut && m.ts < endExclusive);
+  const cut = NOW.getTime() - range * DAYMS;
+  const curMentions = mentions.filter((m) => m.ts >= cut);
   const stats = topicWindowStats(mentions, range, topicCatalog);
   const byId = Object.fromEntries(stats.map((s) => [s.id, s]));
   const cfgRaw = appSettings?.signal_config ?? {};
@@ -1132,21 +1012,9 @@ const Delta = ({ v, suffix="" }) => {
   const Ico = v>0?ArrowUpRight:v<0?ArrowDownRight:Minus;
   return <span className={`delta ${cls}`}><Ico size={12}/>{(v>0?"+":"")+v}{suffix}</span>;
 };
-const InfoHint = ({ title, text, align = "right" }) => (
-  <details className={`info-wrap ${align === "left" ? "left" : ""}`}>
-    <summary className="info-btn" aria-label={`Info zu ${title}`} title={`Info zu ${title}`}>
-      <Info size={13} />
-    </summary>
-    <div className="info-pop">
-      <div className="t">Interpretation</div>
-      <p><b>{title}:</b> {text}</p>
-    </div>
-  </details>
-);
 
 /* =========================  DASHBOARD  ========================= */
-function Dashboard({ agg, range, signals, flavorInsights }){
-  const sentimentDomain = sentimentAxisDomain(agg.series);
+function Dashboard({ agg, range, signals }){
   const severityCount = signals.reduce((acc, s) => {
     acc[s.severity] = (acc[s.severity] ?? 0) + 1;
     return acc;
@@ -1164,9 +1032,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
       <div className="grid g-kpi4" style={{marginBottom:16}}>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><Activity size={14}/> Geschäftsauswirkung
-              <InfoHint title="Geschäftsauswirkung" text="Skala von -100 bis +100. Positive Werte zeigen voraussichtlich günstige Wirkung auf Nachfrage/Absatz, negative Werte deuten auf Geschäftsrisiken hin. Wichtiger als ein Einzelwert ist die Richtung über mehrere Tage." />
-            </span>
+            <span className="lab"><Activity size={14}/> Geschäftsauswirkung</span>
             <span className="kpi-ico" style={{background:"var(--nz-100)",color:"var(--nz-700)"}}><Activity size={17}/></span>
           </div>
           <div className="val" style={{color:sentColor(agg.curNet/100)}}>{agg.curNet>0?"+":""}{agg.curNet}</div>
@@ -1174,9 +1040,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
         </div>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><MessageSquare size={14}/> Erwähnungen
-              <InfoHint title="Erwähnungen" text="Zeigt die Datenmenge im gewählten Zeitraum. Mehr Volumen erhoeht die Aussagekraft, starkes Plus/Minus kann aber auch nur durch einzelne Quellen oder Events entstehen." />
-            </span>
+            <span className="lab"><MessageSquare size={14}/> Erwähnungen</span>
             <span className="kpi-ico" style={{background:"var(--nz-100)",color:"var(--nz-700)"}}><MessageSquare size={16}/></span>
           </div>
           <div className="val">{agg.curVol.toLocaleString("de-DE")}</div>
@@ -1184,9 +1048,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
         </div>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><CheckCircle2 size={14}/> Geschäftlich positiv
-              <InfoHint title="Geschäftlich positiv" text="Anteil der Beitraege mit klar positivem Business-Impact. Hohe Werte zeigen Chancenpotenzial, aber nur in Kombination mit ausreichendem Volumen und stabiler Trendlinie." />
-            </span>
+            <span className="lab"><CheckCircle2 size={14}/> Geschäftlich positiv</span>
             <span className="kpi-ico" style={{background:"var(--pos-bg)",color:"var(--pos)"}}><CheckCircle2 size={16}/></span>
           </div>
           <div className="val">{agg.posShare}%</div>
@@ -1194,9 +1056,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
         </div>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><ShieldAlert size={14}/> Aktive Signale
-              <InfoHint title="Aktive Signale" text="Anzahl automatisch erkannter Risiko-, Chancen- oder Beobachtungssignale. Viele Signale bedeuten nicht automatisch Krise, sondern eher höheren Steuerungsbedarf." />
-            </span>
+            <span className="lab"><ShieldAlert size={14}/> Aktive Signale</span>
             <span className="kpi-ico" style={{background:"var(--neg-bg)",color:"var(--neg)"}}><ShieldAlert size={16}/></span>
           </div>
           <div className="val">{signals.length}</div>
@@ -1209,9 +1069,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
       {/* trend + source */}
       <div className="grid g-split-2-1" style={{marginBottom:16}}>
         <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Stimmungsverlauf</div>
-            <InfoHint title="Stimmungsverlauf" text="Die Kurve zeigt den täglichen Business-Impact. Wichtiger als einzelne Ausreisser ist, ob sich ein Trend über mehrere Tage ober- oder unterhalb der Nulllinie stabilisiert." />
-          </div>
+          <div className="card-h"><div><div className="card-t">Stimmungsverlauf</div>
             <div className="card-s">Täglicher Nordzucker-Impact über {range} Tage</div></div></div>
           <ResponsiveContainer width="100%" height={230}>
             <AreaChart data={agg.series} margin={{top:5,right:6,left:-18,bottom:0}}>
@@ -1223,7 +1081,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false}/>
               <XAxis dataKey="day" tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false} interval="preserveStartEnd" minTickGap={24}/>
-              <YAxis tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false} domain={sentimentDomain} tickCount={5}/>
+              <YAxis tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false} domain={[-100,100]}/>
               <ReferenceLine y={0} stroke="#e4eaf2" />
               <Tooltip content={<ChartTip/>}/>
               <Area type="monotone" dataKey="net" name="Geschäftsauswirkung" stroke="#0a5cb8" strokeWidth={2.4} fill="url(#gPos)"/>
@@ -1231,9 +1089,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
           </ResponsiveContainer>
         </div>
         <div className="card">
-          <div className="card-h"><div className="tt"><div className="card-t">Quellen-Mix</div>
-            <InfoHint title="Quellen-Mix" text="Zeigt, aus welchen Kanälen die Daten stammen. Ein sehr einseitiger Mix kann Interpretationen verzerren; robuste Trends sollten in mehreren Quellen sichtbar sein." />
-          </div></div>
+          <div className="card-h"><div className="card-t">Quellen-Mix</div></div>
           <ResponsiveContainer width="100%" height={170}>
             <PieChart>
               <Pie data={sourcePie} dataKey="value" nameKey="name" innerRadius={42} outerRadius={66} paddingAngle={2}>
@@ -1256,9 +1112,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
       {/* topic sentiment + signals */}
       <div className="grid g-split-1-1" style={{marginBottom:16}}>
         <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Geschäftsauswirkung nach Thema</div>
-            <InfoHint title="Geschäftsauswirkung nach Thema" text="Vergleicht Themencluster nach ihrer mutmaßlichen Wirkung auf Nordzucker. Priorität haben Themen mit stark negativem Wert und gleichzeitig hohem Volumen." />
-          </div>
+          <div className="card-h"><div><div className="card-t">Geschäftsauswirkung nach Thema</div>
             <div className="card-s">Nordzucker-Impact je Themencluster</div></div></div>
           {agg.byTopic.slice(0,7).map(t=>{
             const w = Math.abs(t.net); 
@@ -1273,9 +1127,7 @@ function Dashboard({ agg, range, signals, flavorInsights }){
           })}
         </div>
         <div className="card">
-          <div className="card-h"><div className="tt"><div className="card-t">Signale & Risiken</div>
-            <InfoHint title="Signale und Risiken" text="Automatisch erkannte Auffälligkeiten auf Basis Volumen, Trend und Impact. Nutze sie als Frühwarnsystem, aber validiere kritische Signale immer mit Detaildaten." />
-          </div></div>
+          <div className="card-h"><div className="card-t">Signale & Risiken</div></div>
           {signals.length === 0 ? (
             <div className="empty" style={{padding:"22px 12px"}}>
               <AlertTriangle size={20} style={{color:"var(--ink-3)"}}/>
@@ -1298,46 +1150,6 @@ function Dashboard({ agg, range, signals, flavorInsights }){
           )}
         </div>
       </div>
-
-      <div className="card" style={{marginBottom:16}}>
-        <div className="card-h">
-          <div>
-            <div className="tt"><div className="card-t">Trend-Geschmäcker für Produktentwicklung</div>
-              <InfoHint title="Trend-Geschmäcker" text="Zeigt Geschmacksrichtungen aus YouTube- und News-Daten mit der höchsten Resonanz. Diese Trends unterstützen Priorisierung in der Produktentwicklung." />
-            </div>
-            <div className="card-s">
-              {flavorInsights?.summerTop
-                ? `Sommertrend ${WINDOW_LAST_COMPLETE_DAY.getFullYear()}: ${titleFlavor(flavorInsights.summerTop.flavor)} (${flavorInsights.summerTop.count} Erwähnungen)`
-                : "Noch kein belastbarer Sommertrend im aktuellen Datenfenster"}
-            </div>
-          </div>
-        </div>
-        {!(flavorInsights?.ranked?.length) ? (
-          <div className="empty" style={{padding:"22px 12px"}}>
-            <AlertTriangle size={20} style={{color:"var(--ink-3)"}}/>
-            <div>Keine Geschmacksrichtungen im aktuellen YouTube/News-Fenster erkannt.</div>
-          </div>
-        ) : (
-          <div className="tbl-shell tbl-scroll">
-            <table className="tbl tbl-wide">
-              <thead><tr><th>Rang</th><th>Geschmack</th><th>Erwähnungen</th><th>Sentiment (Public)</th><th>YouTube</th><th>News</th><th>Empfehlung</th></tr></thead>
-              <tbody>
-                {flavorInsights.ranked.slice(0, 6).map((row, idx) => (
-                  <tr key={row.flavor}>
-                    <td style={{fontWeight:600,color:"var(--ink-3)"}}>{idx + 1}</td>
-                    <td style={{fontWeight:600}}>{titleFlavor(row.flavor)}</td>
-                    <td>{row.count}</td>
-                    <td style={{fontWeight:600,color:sentColor(row.net / 100)}}>{row.net > 0 ? "+" : ""}{row.net}</td>
-                    <td>{row.youtube}</td>
-                    <td>{row.news}</td>
-                    <td>{idx === 0 ? "Als Pilot-SKU testen" : "Im Radar behalten"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
     </>
   );
 }
@@ -1345,20 +1157,12 @@ function Dashboard({ agg, range, signals, flavorInsights }){
 /* =========================  TRENDS & RISIKEN  ========================= */
 function Trends({ mentions, range, signals, appSettings, topicCatalog }){
   // topic momentum: current vs previous window volume
-  const endExclusive = WINDOW_END_EXCLUSIVE;
-  const cut = endExclusive - range * DAYMS;
-  const prevCut = cut - range * DAYMS;
-  const isUnclassifiedTopic = (id) => ["unknown", "uncategorized", "other", "misc", ""].includes(String(id ?? "").trim().toLowerCase());
+  const cut = NOW.getTime()-range*DAYMS, prevCut = cut-range*DAYMS;
   const mom = topicCatalog.map(t=>{
-    const cur = mentions.filter(m=>m.topic===t.id && m.ts>=cut && m.ts < endExclusive).length;
+    const cur = mentions.filter(m=>m.topic===t.id && m.ts>=cut).length;
     const prev = mentions.filter(m=>m.topic===t.id && m.ts<cut && m.ts>=prevCut).length || 1;
     return { ...t, cur, delta: Math.round((cur-prev)/prev*100) };
-  }).sort((a,b)=>{
-    const aUnclassified = isUnclassifiedTopic(a.id);
-    const bUnclassified = isUnclassifiedTopic(b.id);
-    if (aUnclassified !== bUnclassified) return aUnclassified ? 1 : -1;
-    return b.delta-a.delta;
-  });
+  }).sort((a,b)=>b.delta-a.delta);
   // multi-line topic volume series (weekly buckets over range)
   const configuredFocus = Array.isArray(appSettings?.trend_focus_topics)
     ? appSettings.trend_focus_topics
@@ -1368,9 +1172,7 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
   const buckets = Math.min(range, 30);
   const series = [];
   for (let d=buckets-1; d>=0; d--){
-    const lo = endExclusive - (d + 1) * DAYMS;
-    const hi = lo + DAYMS;
-    const day = new Date(lo);
+    const day = new Date(NOW.getTime()-d*DAYMS); const lo=day.getTime(), hi=lo+DAYMS;
     const row = { day: dateLabel(day) };
     focus.forEach(f=>{ row[f]=mentions.filter(m=>m.topic===f && m.ts>=lo && m.ts<hi).length; });
     series.push(row);
@@ -1393,9 +1195,7 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
       </p>
       <div className="grid g-split-2-1" style={{marginBottom:16}}>
         <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Themen-Volumen im Zeitverlauf</div>
-            <InfoHint title="Themen-Volumen" text="Zeigt die Anzahl Erwähnungen pro Tag. Ein steigendes Volumen ohne Impact-Verbesserung kann auf wachsende Diskussion bei gleichbleibendem Risiko hindeuten." />
-          </div>
+          <div className="card-h"><div><div className="card-t">Themen-Volumen im Zeitverlauf</div>
             <div className="card-s">Erwähnungen je Tag, ausgewählte Cluster</div></div></div>
           <ResponsiveContainer width="100%" height={250}>
             <LineChart data={series} margin={{top:5,right:8,left:-20,bottom:0}}>
@@ -1412,9 +1212,7 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
           </div>
         </div>
         <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Momentum</div>
-            <InfoHint title="Momentum" text="Prozentuale Veränderung gegenüber der Vorperiode. Hohe Prozentwerte bei sehr kleinem Basisvolumen können überzeichnet sein, deshalb immer mit absoluten Werten lesen." />
-          </div>
+          <div className="card-h"><div><div className="card-t">Momentum</div>
             <div className="card-s">Volumen ggü. Vorperiode</div></div></div>
           <div style={{display:"flex",flexDirection:"column",gap:3}}>
             {mom.slice(0,7).map(t=>(
@@ -1428,9 +1226,7 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
         </div>
       </div>
       <div className="card">
-        <div className="card-h"><div className="tt"><div className="card-t">Risiko- & Chancen-Register</div>
-          <InfoHint title="Risiko- und Chancen-Register" text="Kondensiert relevante Signale in priorisierte Felder. Fokus zuerst auf hohe Risiken mit klarer Handlungsempfehlung und kurzer Zeitschiene." />
-        </div></div>
+        <div className="card-h"><div className="card-t">Risiko- & Chancen-Register</div></div>
         {risks.length === 0 ? (
           <div className="empty" style={{padding:"22px 12px"}}>
             <AlertTriangle size={20} style={{color:"var(--ink-3)"}}/>
@@ -1457,6 +1253,95 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
   );
 }
 
+/* =========================  WETTBEWERB  ========================= */
+function Competition({ onExport, comp }){
+  if (!comp) return null;
+  if (!comp.names?.length || !comp.series?.length) {
+    return (
+      <div className="card">
+        <div className="empty">
+          <AlertTriangle size={28} style={{ color: "var(--neu)" }} />
+          <div style={{ fontWeight: 600, color: "var(--ink)" }}>Noch keine Wettbewerbsdaten vorhanden</div>
+          <div style={{ maxWidth: 560, fontSize: 12.5 }}>
+            Die Wettbewerbsansicht wird automatisch befüllt, sobald die Ingestion Wettbewerber-Mentions
+            aus den Quellen sammelt und daraus Wochenmetriken erzeugt.
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const latest = comp.series[comp.series.length-1] || {};
+  const ranked = comp.names.map(n=>({ ...n, score: latest[n.id] ?? 0 })).sort((a,b)=>b.score-a.score);
+  const sov = comp.names.map(n=>({ name:n.name, value:n.sov, color:n.color }));
+  return (
+    <>
+      <p className="lede" style={{marginBottom:20}}>
+        Vergleich der öffentlichen Markenstimmung und des Share of Voice gegenüber den wichtigsten Wettbewerbern
+        im europäischen Zuckermarkt.
+      </p>
+      <div className="grid g-split-1-1" style={{marginBottom:16}}>
+        <div className="card">
+          <div className="card-h"><div><div className="card-t">Markenstimmung im Verlauf</div>
+            <div className="card-s">12 Wochen, je Hersteller</div></div></div>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={comp.series} margin={{top:5,right:8,left:-22,bottom:0}}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false}/>
+              <XAxis dataKey="week" tick={{fontSize:10.5,fill:"#8694a8"}} axisLine={false} tickLine={false} minTickGap={18}/>
+              <YAxis tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false}/>
+              <Tooltip content={<ChartTip/>}/>
+              {comp.names.map(n=><Line key={n.id} type="monotone" dataKey={n.id} name={n.name}
+                stroke={n.color} strokeWidth={n.id==="nordzucker"?3:1.8} dot={false}
+                strokeDasharray={n.id==="nordzucker"?"":""}/>)}
+            </LineChart>
+          </ResponsiveContainer>
+          <div style={{display:"flex",gap:14,flexWrap:"wrap",marginTop:8}}>
+            {comp.names.map(n=>(<span key={n.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--ink-2)"}}>
+              <span className="dot" style={{background:n.color}}/>{n.name}</span>))}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-h"><div><div className="card-t">Share of Voice</div>
+            <div className="card-s">Anteil am Gesamtgesprächsvolumen</div></div></div>
+          <ResponsiveContainer width="100%" height={200}>
+            <PieChart>
+              <Pie data={sov} dataKey="value" nameKey="name" innerRadius={48} outerRadius={76} paddingAngle={2}>
+                {sov.map((e,i)=><Cell key={i} fill={e.color}/>)}
+              </Pie>
+              <Tooltip content={<ChartTip unit="%"/>}/>
+            </PieChart>
+          </ResponsiveContainer>
+          <div style={{display:"flex",flexDirection:"column",gap:5,marginTop:4}}>
+            {sov.map((s,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:12.5}}>
+              <span className="dot" style={{background:s.color}}/>{s.name}
+              <span style={{marginLeft:"auto",fontWeight:600}}>{s.value}%</span></div>))}
+          </div>
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-h">
+          <div className="card-t">Benchmark-Tabelle</div>
+          <button className="btn no-print" onClick={onExport}><Download size={14}/> CSV</button>
+        </div>
+        <div className="tbl-shell tbl-scroll">
+        <table className="tbl tbl-wide">
+          <thead><tr><th>Rang</th><th>Hersteller</th><th>Markenstimmung</th><th>Share of Voice</th><th>Bewertung</th></tr></thead>
+          <tbody>
+            {ranked.map((r,i)=>(
+              <tr key={r.id}>
+                <td style={{fontWeight:600,color:"var(--ink-3)"}}>{i+1}</td>
+                <td style={{fontWeight:600}}>{r.name}{r.id==="nordzucker"&&<span className="tag" style={{marginLeft:8,background:"var(--nz-100)",color:"var(--nz-700)"}}>Wir</span>}</td>
+                <td style={{fontWeight:600,color:sentColor(r.score/100)}}>{r.score>0?"+":""}{r.score}</td>
+                <td>{r.sov}%</td>
+                <td><span className={`pill ${sentClass(r.score/100)}`}>{r.score>15?"positiv":r.score<-15?"negativ":"neutral"}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </>
+  );
+}
 
 /* =========================  EMPFEHLUNGEN & PROGNOSEN (AI)  ========================= */
 function Recommendations({ dataSummary }){
@@ -1542,78 +1427,16 @@ function Recommendations({ dataSummary }){
 }
 
 /* =========================  KI-ASSISTENT (chat)  ========================= */
-const ASSISTANT_SESSION_KEY = "scf_ai_session_id";
-
-function getAssistantSessionId(){
-  if (typeof window === "undefined") return "session-server";
-  const existing = window.localStorage.getItem(ASSISTANT_SESSION_KEY);
-  if (existing) return existing;
-  const generated = window.crypto?.randomUUID?.() ?? `session-${Date.now()}`;
-  window.localStorage.setItem(ASSISTANT_SESSION_KEY, generated);
-  return generated;
-}
-
 function Assistant({ dataSummary }){
   const [log, setLog] = useState([]);
-  const [history, setHistory] = useState([]);
-  const [conversationId, setConversationId] = useState(null);
-  const [historyBusy, setHistoryBusy] = useState(false);
   const [input, setInput] = useState(""); const [busy, setBusy] = useState(false);
-  const [sessionId] = useState(() => getAssistantSessionId());
   const endRef = useRef(null);
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth"}); }, [log, busy]);
-
-  const refreshHistory = async () => {
-    if (!LIVE) {
-      setHistory([]);
-      return;
-    }
-    try {
-      const rows = await aiConversationHistory(sessionId, 20);
-      setHistory(rows);
-    } catch {
-      setHistory([]);
-    }
-  };
-
-  useEffect(() => {
-    refreshHistory();
-  }, [sessionId]);
-
   const suggestions = [
     "Welche Themen sind aktuell das größte Risiko für unser B2B-Geschäft?",
     "Wie steht Nordzucker im Stimmungsvergleich zu Südzucker?",
     "Was treibt die saisonalen Trends gerade an?",
   ];
-
-  const startNewConversation = () => {
-    setConversationId(null);
-    setLog([]);
-    setInput("");
-  };
-
-  const openConversation = async (id) => {
-    if (!id || !LIVE || historyBusy || busy) return;
-    setHistoryBusy(true);
-    try {
-      const data = await aiConversationMessages(sessionId, id, 160);
-      const msgs = Array.isArray(data?.messages)
-        ? data.messages
-          .filter((m) => m?.role === "user" || m?.role === "assistant")
-          .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
-        : [];
-      setConversationId(id);
-      setLog(msgs);
-    } catch {
-      setLog((prev) => [...prev, {
-        role: "assistant",
-        content: "Verlauf konnte nicht geladen werden. Bitte erneut versuchen.",
-      }]);
-    } finally {
-      setHistoryBusy(false);
-    }
-  };
-
   const send = async (q) => {
     const text = (q ?? input).trim(); if (!text || busy) return;
     const next = [...log, { role:"user", content:text }];
@@ -1623,52 +1446,20 @@ function Assistant({ dataSummary }){
       setBusy(false); return;
     }
     try {
-      const response = await aiChat({
-        session_id: sessionId,
-        conversation_id: conversationId,
-        messages: next.map((m) => ({ role: m.role, content: m.content })),
-        question: text,
-        days: 3650,
-      });
-      const nextConversationId = response?.conversation_id ?? conversationId;
-      if (nextConversationId) setConversationId(nextConversationId);
-      setLog([...next, { role:"assistant", content: String(response?.answer ?? "") }]);
-      refreshHistory();
+      const msgs = next.map(m=>({ role:m.role, content:m.content }));
+      const ans = await aiChat(msgs);
+      setLog([...next, { role:"assistant", content:ans }]);
     } catch(e){
       setLog([...next, { role:"assistant", content:"Die KI-Schnittstelle ist gerade nicht erreichbar. Prüfe, ob die ai-query Edge Function deployed und der Anthropic-Key als Secret gesetzt ist." }]);
     } finally { setBusy(false); }
   };
   return (
     <div className="card chat-wrap">
-      <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
-        <button className="btn" onClick={startNewConversation} disabled={busy || historyBusy}>Neue Unterhaltung</button>
-        <select
-          value={conversationId ?? ""}
-          onChange={(e) => openConversation(e.target.value)}
-          disabled={!LIVE || busy || historyBusy || history.length === 0}
-          style={{
-            minWidth: 260,
-            border: "1px solid var(--line)",
-            borderRadius: 10,
-            padding: "8px 10px",
-            color: "var(--ink)",
-            background: "#fff",
-          }}
-        >
-          <option value="">{history.length === 0 ? "Kein Verlauf" : "Verlauf auswählen"}</option>
-          {history.map((row) => (
-            <option key={row.id} value={row.id}>
-              {row.title || "Neue Unterhaltung"}
-            </option>
-          ))}
-        </select>
-        {historyBusy && <span style={{fontSize:12,color:"var(--ink-3)"}}>Lade Verlauf...</span>}
-      </div>
       {log.length===0 ? (
         <div className="empty" style={{flex:1,justifyContent:"center"}}>
           <MessageSquare size={30} style={{color:"var(--nz-500)"}}/>
           <div style={{fontWeight:600,fontSize:15,color:"var(--ink)"}}>Frag die Daten</div>
-          <div style={{maxWidth:440}}>Stelle Fragen zur Geschäftsauswirkung, zu Trends oder zu Risiken. Antworten basieren auf den live aggregierten Daten aus Sicht von Nordzucker.</div>
+          <div style={{maxWidth:440}}>Stelle Fragen zur Geschäftsauswirkung, zu Trends, Risiken oder zum Wettbewerb. Antworten basieren auf den live aggregierten Daten aus Sicht von Nordzucker.</div>
         </div>
       ) : (
         <div className="chat-log">
@@ -2164,30 +1955,22 @@ function BICube({ mentions }) {
 
       <div className="grid g-3" style={{ marginBottom: 16 }}>
         <div className="card kpi">
-          <div className="lab"><Activity size={14} /> Geschäftsauswirkung (gefiltert)
-            <InfoHint title="Geschäftsauswirkung (gefiltert)" text="Impact nur für den aktuell gesetzten Cube-Slice. Damit lassen sich regionale oder produktspezifische Chancen und Risiken gezielt isolieren." />
-          </div>
+          <div className="lab"><Activity size={14} /> Geschäftsauswirkung (gefiltert)</div>
           <div className="val" style={{ color: sentColor(cubeData.net / 100) }}>{cubeData.net > 0 ? "+" : ""}{cubeData.net}</div>
         </div>
         <div className="card kpi">
-          <div className="lab"><MessageSquare size={14} /> Beobachtungen
-            <InfoHint title="Beobachtungen" text="Anzahl Datensätze im aktiven Filter. Bei kleinem Volumen sind Aussagen eher indikativ; bei großem Volumen deutlich belastbarer." />
-          </div>
+          <div className="lab"><MessageSquare size={14} /> Beobachtungen</div>
           <div className="val">{cubeData.count.toLocaleString("de-DE")}</div>
         </div>
         <div className="card kpi">
-          <div className="lab"><CheckCircle2 size={14} /> Geschäftlich positiv
-            <InfoHint title="Geschäftlich positiv (Cube)" text="Prozent positiver Impacts im gefilterten Ausschnitt. Ein hoher Wert bei kleinem Datenvolumen sollte immer gegen mehrere Filterkombinationen gegengeprüft werden." />
-          </div>
+          <div className="lab"><CheckCircle2 size={14} /> Geschäftlich positiv</div>
           <div className="val">{cubeData.posShare}%</div>
         </div>
       </div>
 
       <div className="grid g-split-12-1" style={{ marginBottom: 16 }}>
         <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Cube-Ansicht (Top-Kombinationen)</div>
-            <InfoHint title="Cube-Ansicht" text="Zeigt die stärksten Kombinationen aus Quartal, Region und Produkt. Nutze sie, um Hotspots mit hohem Volumen und gleichzeitig negativem Netto-Wert schnell zu priorisieren." />
-          </div><div className="card-s">Quartal × Region × Produkt</div></div></div>
+          <div className="card-h"><div><div className="card-t">Cube-Ansicht (Top-Kombinationen)</div><div className="card-s">Quartal × Region × Produkt</div></div></div>
           <div className="tbl-shell tbl-scroll">
           <table className="tbl tbl-wide">
             <thead>
@@ -2210,9 +1993,7 @@ function BICube({ mentions }) {
         </div>
 
         <div className="card">
-          <div className="card-h"><div><div className="tt"><div className="card-t">Top Produktkategorien</div>
-            <InfoHint title="Top Produktkategorien" text="Balken zeigen Volumen je Produktkategorie. Für Business-Entscheidungen immer zusammen mit Impact-Wert aus Tabelle/Cube lesen, nicht nur nach Menge priorisieren." />
-          </div><div className="card-s">Volumen + Sentiment</div></div></div>
+          <div className="card-h"><div><div className="card-t">Top Produktkategorien</div><div className="card-s">Volumen + Sentiment</div></div></div>
           <ResponsiveContainer width="100%" height={250}>
             <BarChart data={cubeData.topProducts} margin={{ top: 5, right: 8, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false} />
@@ -2226,9 +2007,7 @@ function BICube({ mentions }) {
       </div>
 
       <div className="card">
-        <div className="card-h"><div><div className="tt"><div className="card-t">Heatmap-Snapshot</div>
-          <InfoHint title="Heatmap-Snapshot" text="Schneller Blick auf volumenstarke Zellen. Eine hohe Balkenfuellung bedeutet viele Erwähnungen, nicht automatisch positiven Impact." />
-        </div><div className="card-s">Stärkste Quartal × Produkt-Zellen</div></div></div>
+        <div className="card-h"><div><div className="card-t">Heatmap-Snapshot</div><div className="card-s">Stärkste Quartal × Produkt-Zellen</div></div></div>
         <div className="cube-heat">
           {cubeData.heatCells.map((cell, idx) => (
             <div className="cube-cell" key={`${cell.quarter}-${cell.product}`} style={{animationDelay:`${40 + idx * 35}ms`}}>
@@ -2244,12 +2023,12 @@ function BICube({ mentions }) {
   );
 }
 
-
 /* =========================  ROOT APP  ========================= */
 const NAV = [
   { id:"dashboard", label:"Dashboard", icon:LayoutDashboard, sec:"Übersicht" },
   { id:"trends",    label:"Trends & Risiken", icon:TrendingUp, sec:"Übersicht" },
   { id:"bi",        label:"BI Cube", icon:FileText, sec:"Übersicht" },
+  { id:"comp",      label:"Wettbewerb", icon:Users, sec:"Analyse" },
   { id:"recs",      label:"Empfehlungen & Prognosen", icon:Lightbulb, sec:"Analyse" },
   { id:"chat",      label:"KI-Assistent", icon:MessageSquare, sec:"Analyse" },
   { id:"sources",   label:"Datenquellen", icon:Database, sec:"System" },
@@ -2257,31 +2036,27 @@ const NAV = [
 const TITLES = {
   dashboard:["Übersicht","Stimmungs-Dashboard"], trends:["Übersicht","Trends & Risiken"],
   bi:["Übersicht","BI Cube & Dimensionen"],
-  recs:["Analyse","Empfehlungen & Prognosen"],
+  comp:["Analyse","Wettbewerbs-Benchmarking"], recs:["Analyse","Empfehlungen & Prognosen"],
   chat:["Analyse","KI-Assistent"], sources:["System","Datenquellen & Schnittstellen"],
 };
 
 export default function App(){
   const CACHE_KEY = "scf_mentions_cache_v1";
   const CACHE_TTL_MS = 5 * 60 * 1000;
-  const SOURCE_HEALTH_WINDOW_DAYS = 90;
   const [view, setView] = useState("dashboard");
   const [range, setRange] = useState(7);
   const [open, setOpen] = useState(false);
   const [mentions, setMentions] = useState([]);
+  const [comp, setComp] = useState(null);
   const [sourceHealth, setSourceHealth] = useState([]);
   const [appSettings, setAppSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [refreshTick, setRefreshTick] = useState(0);
   const [sec, title] = TITLES[view];
 
   useEffect(()=>{ (async()=>{
-    const silentRefresh = refreshTick > 0;
-    if (!silentRefresh) {
-      setLoading(true);
-      setLoadError("");
-    }
+    setLoading(true);
+    setLoadError("");
     try {
       const cached = localStorage.getItem(CACHE_KEY);
       if (cached){
@@ -2293,7 +2068,7 @@ export default function App(){
               return { ...m, date: d, ts: d.getTime() };
             });
             setMentions(fastMentions);
-            if (!silentRefresh) setLoading(false);
+            setLoading(false);
           }
         } catch {
           // ignore invalid cache
@@ -2301,28 +2076,22 @@ export default function App(){
       }
 
       // Schneller Start: 30 Tage reichen für alle aktuellen Dashboard-Filter.
-      const [data, sourceStatus, settings] = await Promise.all([
-        loadMentions(SOURCE_HEALTH_WINDOW_DAYS),
-        loadSourceHealth(SOURCE_HEALTH_WINDOW_DAYS).catch(() => []),
+      const [data, competitors, sourceStatus, settings] = await Promise.all([
+        loadMentions(30),
+        loadCompetitors(),
+        loadSourceHealth(30).catch(() => []),
         loadAppSettings().catch(() => ({})),
       ]);
       setMentions(data);
+      setComp(competitors);
       setSourceHealth(sourceStatus);
       setAppSettings(settings);
       localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), mentions: data }));
     } catch (e) {
       console.error("Daten konnten nicht geladen werden:", e);
-      if (!silentRefresh) setLoadError(String(e?.message || e));
-    } finally {
-      if (!silentRefresh) setLoading(false);
-    }
-  })(); }, [refreshTick]);
-
-  useEffect(() => {
-    if (!LIVE) return;
-    const timer = setInterval(() => setRefreshTick((v) => v + 1), 20000);
-    return () => clearInterval(timer);
-  }, []);
+      setLoadError(String(e?.message || e));
+    } finally { setLoading(false); }
+  })(); }, []);
 
   const topicCatalog = useMemo(
     () => resolveTopicCatalog(appSettings, mentions),
@@ -2337,10 +2106,6 @@ export default function App(){
     [mentions, range, appSettings, topicCatalog],
   );
   const biMentions = useMemo(() => mentions.map(enrichMentionForBI), [mentions]);
-  const flavorInsights = useMemo(
-    () => buildFlavorInsights(mentions, range),
-    [mentions, range],
-  );
   const activeSourceLabel = useMemo(() => {
     if (!LIVE) return "Demo-Daten aktiv";
     const activeIds = sourceHealth.filter((s) => (s.volume ?? 0) > 0).map((s) => s.id);
@@ -2365,6 +2130,7 @@ export default function App(){
   const dataSummary = useMemo(()=>{
     if (!agg) return "";
     const topics = agg.byTopic.slice(0,6).map(t=>`${t.label}: Impact ${t.net>0?"+":""}${t.net} (${t.vol} Erw.)`).join("; ");
+    const compTxt = comp ? comp.names.map(n=>`${n.name}: ${comp.series[comp.series.length-1]?.[n.id] ?? 0}, SoV ${n.sov}%`).join("; ") : "";
     const signalTxt = liveSignals.length
       ? liveSignals.map((s, i) => `(${i + 1}) ${s.title}`).join("; ")
       : "keine belastbaren Signale im aktuellen Fenster";
@@ -2374,18 +2140,23 @@ Geschäftsauswirkung für Nordzucker: ${agg.curNet} (Δ ${agg.netDelta} ggü. Vo
 Erwähnungen: ${agg.curVol} (Δ ${agg.volDelta}%). Geschäftlich positiver Anteil: ${agg.posShare}%.
 Geschäftsauswirkung nach Thema: ${topics}.
 Aktive Signale: ${signalTxt}.
-Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row) => `${titleFlavor(row.flavor)} (${row.count})`).join("; ") || "keine"}.`;
-  }, [agg, range, liveSignals, flavorInsights]);
+Wettbewerb (Markenstimmung & Share of Voice): ${compTxt}.`;
+  }, [agg, range, comp, liveSignals]);
+
   const exportReport = useMemo(
-    () => buildExportReport({ agg, liveSignals, range, title, view }),
-    [agg, liveSignals, range, title, view],
+    () => buildExportReport({ agg, comp, liveSignals, range, title, view }),
+    [agg, comp, liveSignals, range, title, view],
   );
 
   const exportCSV = () => {
     if (!agg || !exportReport) return;
     let rows = [];
     let fileName = `nordzucker_mentions_${range}t.csv`;
-    if (view==="bi"){
+    if (view==="comp"){
+      if (!comp) return;
+      rows = comp.names.map(n=>({ Hersteller:n.name, NettoStimmung:comp.series[comp.series.length-1]?.[n.id] ?? 0, ShareOfVoice_Pct:n.sov }));
+      fileName = "nordzucker_wettbewerb.csv";
+    } else if (view==="bi"){
       rows = biMentions.map(m=>(
         { Datum:m.date.toISOString().slice(0,10), Quartal:m.quarter, Region:m.region, Produkt:m.product,
           Quelle:m.source, Thema:m.topicLabel, BusinessImpact:m.sentiment, BusinessLabel:m.sentimentLabel,
@@ -2412,12 +2183,12 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
       },
       {
         title: "Handlungsempfehlungen",
-        header: ["Score", "Priorität", "Owner", "Zeithorizont", "Empfehlung", "Begründung", "Erfolgskriterium"],
+        header: ["Score", "Prioritaet", "Owner", "Zeithorizont", "Empfehlung", "Begruendung", "Erfolgskriterium"],
         rows: exportReport.recommendations.map((item) => [item.score, item.priority, item.owner, item.horizon, item.action, item.reason, item.successKpi]),
       },
       {
         title: "30-60-90 Tage Plan",
-        header: ["Horizont", "Ziel", "Owner", "Maßnahmen"],
+        header: ["Horizont", "Ziel", "Owner", "Massnahmen"],
         rows: exportReport.actionPlan.map((item) => [item.horizon, item.objective, item.owner, item.actions]),
       },
       {
@@ -2471,9 +2242,9 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
           <button className="menu-btn" onClick={()=>setOpen(o=>!o)}>{open?<X size={18}/>:<Menu size={18}/>}</button>
           <div><div className="crumb">{sec}</div><h1>{title}</h1></div>
           <div className="spacer"/>
-          {view!=="sources" && view!=="bi" && (
+          {(view==="dashboard"||view==="trends") && (
             <div className="range">
-              {[7,14,30,90].map(r=>(<button key={r} className={range===r?"on":""} onClick={()=>setRange(r)}>{r === 90 ? "90 Tage (Quartal)" : `${r} Tage`}</button>))}
+              {[7,14,30].map(r=>(<button key={r} className={range===r?"on":""} onClick={()=>setRange(r)}>{r} Tage</button>))}
             </div>
           )}
           {view!=="chat" && view!=="sources" && (
@@ -2505,7 +2276,7 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
                   <ul>
                     <li>Business Impact: {signed(agg.curNet)} (Delta {signed(agg.netDelta)})</li>
                     <li>Public Sentiment: {signed(agg.curPublicNet)} (Delta {signed(agg.publicNetDelta)})</li>
-                    <li>Erwähnungen: {agg.curVol} (Delta {signed(agg.volDelta)}%)</li>
+                    <li>Erwaehnungen: {agg.curVol} (Delta {signed(agg.volDelta)}%)</li>
                     <li>Positiver Business-Anteil: {agg.posShare}%</li>
                   </ul>
                 </div>
@@ -2513,7 +2284,7 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
               <div className="print-plan">
                 <h3>30-60-90 Tage Aktionsplan</h3>
                 <table className="print-plan-table">
-                  <thead><tr><th style={{width:"16%"}}>Horizont</th><th style={{width:"24%"}}>Ziel</th><th style={{width:"20%"}}>Owner</th><th>Maßnahmen</th></tr></thead>
+                  <thead><tr><th style={{width:"16%"}}>Horizont</th><th style={{width:"24%"}}>Ziel</th><th style={{width:"20%"}}>Owner</th><th>Massnahmen</th></tr></thead>
                   <tbody>
                     {exportReport.actionPlan.map((item) => (
                       <tr key={item.horizon}>
@@ -2534,7 +2305,7 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
               <div><div style={{fontFamily:"Space Grotesk",fontWeight:700,fontSize:20,color:"var(--nz-700)"}}>Nordzucker · Smart Customer Feedback</div>
                 <div style={{fontSize:13,color:"var(--ink-2)"}}>{title} — letzte {range} Tage</div></div>
-              <div style={{fontSize:12,color:"var(--ink-3)"}}>Erstellt {REPORT_GENERATED_AT.toLocaleDateString("de-DE")}</div>
+              <div style={{fontSize:12,color:"var(--ink-3)"}}>Erstellt {NOW.toLocaleDateString("de-DE")}</div>
             </div>
           </div>
           {exportReport && (
@@ -2542,7 +2313,7 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
               <div className="print-grid">
                 <div className="print-kpi"><div className="k">Business Impact</div><div className="v">{signed(agg.curNet)}</div></div>
                 <div className="print-kpi"><div className="k">Public Sentiment</div><div className="v">{signed(agg.curPublicNet)}</div></div>
-                <div className="print-kpi"><div className="k">Erwähnungen</div><div className="v">{agg.curVol}</div></div>
+                <div className="print-kpi"><div className="k">Erwaehnungen</div><div className="v">{agg.curVol}</div></div>
                 <div className="print-kpi"><div className="k">Positiver Anteil</div><div className="v">{agg.posShare}%</div></div>
               </div>
               <div className="print-panel" style={{marginBottom:10}}>
@@ -2558,7 +2329,7 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
               <div className="print-panel">
                 <h3>Handlungsempfehlungen</h3>
                 <table className="print-table">
-                  <thead><tr><th style={{width:"9%"}}>Score</th><th style={{width:"11%"}}>Priorität</th><th style={{width:"16%"}}>Owner</th><th style={{width:"12%"}}>Horizont</th><th style={{width:"22%"}}>Maßnahme</th><th>Begründung / KPI</th></tr></thead>
+                  <thead><tr><th style={{width:"9%"}}>Score</th><th style={{width:"11%"}}>Prioritaet</th><th style={{width:"16%"}}>Owner</th><th style={{width:"12%"}}>Horizont</th><th style={{width:"22%"}}>Massnahme</th><th>Begruendung / KPI</th></tr></thead>
                   <tbody>
                     {exportReport.recommendations.map((item, idx) => (
                       <tr key={`${item.action}-${idx}`}>
@@ -2601,9 +2372,10 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
             </div></div>
           ) : (
             <>
-              {view==="dashboard" && <Dashboard agg={agg} range={range} signals={liveSignals} flavorInsights={flavorInsights}/>} 
+              {view==="dashboard" && <Dashboard agg={agg} range={range} signals={liveSignals}/>}
               {view==="trends"    && <Trends mentions={mentions} range={range} signals={liveSignals} appSettings={appSettings} topicCatalog={topicCatalog}/>}
               {view==="bi"        && <BICube mentions={biMentions}/>}
+              {view==="comp"      && <Competition onExport={exportCSV} comp={comp}/>}
               {view==="recs"      && <Recommendations dataSummary={dataSummary}/>}
               {view==="chat"      && <Assistant dataSummary={dataSummary}/>}
               {view==="sources"   && <Sources sourceHealth={sourceHealth} appSettings={appSettings} onSaveSettings={handleSaveSettings}/>} 
@@ -2614,4 +2386,3 @@ Trend-Geschmäcker (YouTube/News): ${flavorInsights.ranked.slice(0, 3).map((row)
     </div>
   );
 }
-

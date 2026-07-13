@@ -22,15 +22,12 @@ const QUERIES = [
   "kuchen",
   "backen",
   "gebäck",
-  "einkochen",
-  "einmachen",
-  "marmelade",
-  "konfituere",
-  "konfitüre",
-  "gelierzucker",
-  "einmachzucker",
-  "gartensaison",
-  "obsternte",
+  "nordzucker",
+  "südzucker",
+  "suedzucker",
+  "pfeifer langen",
+  "pfeifer und langen",
+  "cosun beet",
 ];
 const MAX_ITEMS_PER_RUN = 80;
 const ADAPTER_TIMEOUT_MS = 60000;
@@ -70,16 +67,13 @@ const KEYWORD_PATTERNS = [
   /\bplaetzchen\b/i,
   /\bmuffin(s)?\b/i,
   /\bbrownie(s)?\b/i,
-  /\beinkochen\b/i,
-  /\beinmachen\b/i,
-  /\bmarmelade(n)?\b/i,
-  /\bkonfituere(n)?\b/i,
-  /\bkonfitüre(n)?\b/i,
-  /\bgelierzucker\b/i,
-  /\beinmachzucker\b/i,
-  /\bgartensaison\b/i,
-  /\bobsternte\b/i,
   /\bnordzucker\b/i,
+  /\bsüdzucker\b/i,
+  /\bsuedzucker\b/i,
+  /\bpfeifer\b/i,
+  /\blangen\b/i,
+  /\bcosun\b/i,
+  /\bbeet\b/i,
 ];
 
 const YOUTUBE_TERMS = [
@@ -97,17 +91,10 @@ const YOUTUBE_TERMS = [
   "softdrink",
   "diabetes",
   "nordzucker",
-  "einkochen",
-  "marmelade",
-  "gelierzucker",
-  "einmachzucker",
-  "gartensaison",
-];
-
-const ALWAYS_INCLUDE_YOUTUBE_TERMS = [
-  "nordzucker",
-  "einkochen",
-  "marmelade",
+  "südzucker",
+  "suedzucker",
+  "pfeifer langen",
+  "cosun beet",
 ];
 
 const SIGNAL_TERMS = Array.from(new Set([
@@ -129,12 +116,36 @@ const HIGH_VALUE_TERMS = new Set([
   "sugarfree",
   "softdrink",
   "nordzucker",
-  "einkochen",
-  "marmelade",
-  "gelierzucker",
-  "einmachzucker",
-  "gartensaison",
+  "südzucker",
+  "suedzucker",
+  "pfeifer langen",
+  "cosun beet",
+  "nordzucker",
+  "südzucker",
+  "suedzucker",
+  "pfeifer langen",
+  "cosun beet",
 ]);
+const COMPETITOR_CONTEXT_TERMS = [
+  "zucker",
+  "sugar",
+  "rübe",
+  "ruebe",
+  "süß",
+  "suess",
+  "syrup",
+  "sirup",
+  "lebensmittel",
+];
+
+type CompetitorProfile = {
+  name: string;
+  aliases: string[];
+  query_hints: string[];
+  require_context: boolean;
+};
+
+let activeCompetitorProfiles: CompetitorProfile[] = [];
 
 type RunInsights = {
   topTerms: Array<{ term: string; count: number }>;
@@ -206,6 +217,26 @@ type YoutubeTermStat = {
 
 let lastYoutubeRunDebug: YoutubeRunDebug | null = null;
 
+async function loadCompetitorProfiles(db: ReturnType<typeof serviceClient>): Promise<CompetitorProfile[]> {
+  const { data, error } = await db
+    .from("competitor_profiles")
+    .select("name, aliases, query_hints, require_context")
+    .eq("active", true)
+    .order("name", { ascending: true });
+
+  if (error) {
+    console.error("load competitor profiles failed:", error.message);
+    return [];
+  }
+
+  return (data ?? []).map((row: any) => ({
+    name: row.name,
+    aliases: Array.isArray(row.aliases) ? row.aliases : [],
+    query_hints: Array.isArray(row.query_hints) ? row.query_hints : [],
+    require_context: !!row.require_context,
+  }));
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: number | undefined;
   try {
@@ -226,14 +257,6 @@ function normalizeText(input: string): string {
     .replace(/[\t\r\n]+/g, " ")
     .replace(/\s{2,}/g, " ")
     .trim();
-}
-
-function parseSourceTimestamp(value: unknown): string | null {
-  const raw = String(value ?? "").trim();
-  if (!raw) return null;
-  const dt = new Date(raw);
-  if (Number.isNaN(dt.getTime())) return null;
-  return dt.toISOString();
 }
 
 function countLinks(input: string): number {
@@ -285,12 +308,6 @@ function prepareItems(items: Raw[]): { prepared: Prepared[]; stats: FilterStats 
 
   for (const item of items) {
     const content = normalizeText(item.content ?? "");
-    const publishedAt = parseSourceTimestamp(item.published_at);
-    if (!publishedAt) {
-      stats.dropped += 1;
-      stats.reasons.invalid_published_at = (stats.reasons.invalid_published_at ?? 0) + 1;
-      continue;
-    }
     const key = `${item.source}|${item.external_id}|${content.toLowerCase()}`;
     if (seen.has(key)) {
       stats.dropped += 1;
@@ -315,7 +332,6 @@ function prepareItems(items: Raw[]): { prepared: Prepared[]; stats: FilterStats 
 
     prepared.push({
       ...item,
-      published_at: publishedAt,
       content,
       signalScore: signal.score,
       matchedTerms: signal.matchedTerms,
@@ -327,17 +343,35 @@ function prepareItems(items: Raw[]): { prepared: Prepared[]; stats: FilterStats 
 }
 
 function selectBalancedItems(items: Prepared[], limit: number): Prepared[] {
-  const freshestFirst = [...items]
-    .sort((a, b) => {
-      const timeDiff = new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
-      if (timeDiff !== 0) return timeDiff;
-      return b.signalScore - a.signalScore;
-    })
-    .slice(0, limit);
-
+  if (items.length <= limit) return items;
+  const bySource = new Map<string, Prepared[]>();
+  for (const item of items) {
+    const bucket = bySource.get(item.source) ?? [];
+    bucket.push(item);
+    bySource.set(item.source, bucket);
+  }
+  for (const bucket of bySource.values()) {
+    bucket.sort((a, b) => {
+      if (b.signalScore !== a.signalScore) return b.signalScore - a.signalScore;
+      return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+    });
+  }
+  const sources = Array.from(bySource.keys()).sort();
+  const out: Prepared[] = [];
+  while (out.length < limit) {
+    let progressed = false;
+    for (const src of sources) {
+      const bucket = bySource.get(src);
+      if (!bucket || bucket.length === 0) continue;
+      out.push(bucket.shift() as Prepared);
+      progressed = true;
+      if (out.length >= limit) break;
+    }
+    if (!progressed) break;
+  }
   // Keep the freshest subset for downstream NLP/embedding to avoid worker resource limits.
-  const capped = freshestFirst
-    .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+  const capped = out
+    .sort((a, b) => new Date(b.published_at ?? 0).getTime() - new Date(a.published_at ?? 0).getTime())
     .slice(0, MAX_YOUTUBE_ITEMS_FOR_PIPELINE);
   return capped;
 }
@@ -351,11 +385,9 @@ function pickRotatingTerms(pool: string[], count: number): string[] {
   return out;
 }
 
-function normalizeYoutubeTerm(term: string): string {
-  return String(term ?? "")
-    .trim()
-    .replace(/^['"]+|['"]+$/g, "")
-    .replace(/\s{2,}/g, " ");
+function buildCompetitorTerms(profiles: CompetitorProfile[]): string[] {
+  const terms = profiles.flatMap((p) => p.query_hints?.length ? p.query_hints : p.aliases.slice(0, 1));
+  return Array.from(new Set(terms.map((t) => t.trim()).filter(Boolean)));
 }
 
 function stableHash(input: string): number {
@@ -368,19 +400,10 @@ function stableHash(input: string): number {
 }
 
 function buildYoutubeTermPool(): string[] {
-  const ordered = [...YOUTUBE_TERMS, ...ALWAYS_INCLUDE_YOUTUBE_TERMS]
-    .map(normalizeYoutubeTerm)
+  const competitor = buildCompetitorTerms(activeCompetitorProfiles);
+  return Array.from(new Set([...YOUTUBE_TERMS, ...competitor]))
+    .map((term) => term.trim())
     .filter(Boolean);
-
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const term of ordered) {
-    const key = term.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(term);
-  }
-  return out;
 }
 
 async function loadYoutubeTermStats(terms: string[]): Promise<Map<string, YoutubeTermStat>> {
@@ -423,17 +446,7 @@ function pickAdaptiveYoutubeTerms(maxTerms: number, pool: string[], stats: Map<s
   const exploit = scored.slice(0, exploitCount).map((entry) => entry.term);
   const rest = scored.slice(exploitCount).map((entry) => entry.term);
   const rotatedRest = pickRotatingTerms(rest, Math.max(0, maxTerms - exploit.length));
-  const mandatory = ALWAYS_INCLUDE_YOUTUBE_TERMS.filter((term) => pool.includes(term));
-  const candidate = [...mandatory, ...exploit, ...rotatedRest];
-  const unique: string[] = [];
-  const seen = new Set<string>();
-  for (const term of candidate) {
-    const key = term.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(term);
-  }
-  return unique.slice(0, maxTerms);
+  return Array.from(new Set([...exploit, ...rotatedRest])).slice(0, maxTerms);
 }
 
 async function persistYoutubeTermStats(searchHitsByTerm: Record<string, number>): Promise<void> {
@@ -465,6 +478,108 @@ async function persistYoutubeTermStats(searchHitsByTerm: Record<string, number>)
 
 function escapeRegex(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeForMatch(input: string): string {
+  return ` ${input
+    .toLowerCase()
+    .replace(/[^a-z0-9äöüß]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim()} `;
+}
+
+function mentionCompetitors(content: string, profiles: CompetitorProfile[]): string[] {
+  const normalized = normalizeForMatch(content);
+  const matched: string[] = [];
+  const hasContext = COMPETITOR_CONTEXT_TERMS.some((term) => normalized.includes(` ${term} `));
+  for (const competitor of profiles) {
+    const hit = competitor.aliases.some((alias) => normalized.includes(` ${normalizeForMatch(alias).trim()} `));
+    if (competitor.require_context && hit && !hasContext) {
+      continue;
+    }
+    if (hit) matched.push(competitor.name);
+  }
+  return matched;
+}
+
+function weekStartUTC(input: string): string {
+  const date = new Date(input);
+  date.setUTCHours(0, 0, 0, 0);
+  const day = date.getUTCDay();
+  const diffToMonday = (day + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - diffToMonday);
+  return date.toISOString().slice(0, 10);
+}
+
+async function updateCompetitorMetrics(
+  db: ReturnType<typeof serviceClient>,
+  profiles: CompetitorProfile[],
+): Promise<{ weeks: number; rows: number }> {
+  if (profiles.length === 0) return { weeks: 0, rows: 0 };
+  const sinceIso = new Date(Date.now() - 84 * 86400000).toISOString();
+  const sinceDate = sinceIso.slice(0, 10);
+  const { data, error } = await db
+    .from("mentions")
+    .select("content, public_sentiment, sentiment, published_at")
+    .eq("enrichment_status", "done")
+    .gte("published_at", sinceIso)
+    .order("published_at", { ascending: false })
+    .limit(8000);
+
+  if (error) throw new Error(`competitor metrics source read failed: ${error.message}`);
+
+  type WeekBucket = {
+    total: number;
+    byCompetitor: Record<string, { count: number; sumSent: number }>;
+  };
+
+  const byWeek = new Map<string, WeekBucket>();
+  for (const row of data ?? []) {
+    const matched = mentionCompetitors(row.content ?? "", profiles);
+    if (matched.length === 0) continue;
+    const week = weekStartUTC(row.published_at);
+    const bucket = byWeek.get(week) ?? {
+      total: 0,
+      byCompetitor: Object.fromEntries(profiles.map((c) => [c.name, { count: 0, sumSent: 0 }])),
+    };
+
+    for (const comp of matched) {
+      bucket.total += 1;
+      const slot = bucket.byCompetitor[comp];
+      slot.count += 1;
+      slot.sumSent += Number(row.public_sentiment ?? row.sentiment ?? 0);
+    }
+    byWeek.set(week, bucket);
+  }
+
+  const { error: clearError } = await db
+    .from("competitor_metrics")
+    .delete()
+    .gte("week", sinceDate);
+  if (clearError) throw new Error(`competitor metrics cleanup failed: ${clearError.message}`);
+
+  if (byWeek.size === 0) return { weeks: 0, rows: 0 };
+
+  const rows = Array.from(byWeek.entries()).flatMap(([week, bucket]) => {
+    return profiles.map((competitor) => {
+      const slot = bucket.byCompetitor[competitor.name] ?? { count: 0, sumSent: 0 };
+      const netSentiment = slot.count > 0 ? Math.round((slot.sumSent / slot.count) * 100) : 0;
+      const shareOfVoice = bucket.total > 0 ? +((slot.count / bucket.total) * 100).toFixed(2) : 0;
+      return {
+        competitor: competitor.name,
+        week,
+        net_sentiment: netSentiment,
+        share_of_voice: shareOfVoice,
+      };
+    });
+  });
+
+  const { error: upsertError } = await db
+    .from("competitor_metrics")
+    .upsert(rows, { onConflict: "competitor,week" });
+  if (upsertError) throw new Error(`competitor metrics upsert failed: ${upsertError.message}`);
+
+  return { weeks: byWeek.size, rows: rows.length };
 }
 
 function computeSignal(content: string): { score: number; matchedTerms: string[] } {
@@ -575,6 +690,34 @@ async function news(): Promise<Raw[]> {
     url: a.url,
     published_at: a.publishedAt,
   })).filter((r: Raw) => r.content));
+
+  const competitorQueries = activeCompetitorProfiles.map((profile) => {
+    const base = profile.query_hints?.[0] || profile.aliases?.[0] || profile.name;
+    const query = profile.require_context
+      ? `${base} AND (zucker OR sugar OR rübe OR ruebe)`
+      : base;
+    return { tag: base, query };
+  });
+
+  for (const item of competitorQueries) {
+    try {
+      const q = encodeURIComponent(item.query);
+      const res = await fetch(
+        `https://newsapi.org/v2/everything?q=${q}&language=de&sortBy=publishedAt&pageSize=4&apiKey=${key}`,
+      ).then((r) => r.json());
+
+      out.push(...(res?.articles ?? []).map((a: any): Raw => ({
+        source: "news",
+        external_id: a.url,
+        author: a.source?.name ?? null,
+        content: `${item.tag} ${a.title ?? ""} ${a.description ?? ""}`.trim().slice(0, 2000),
+        url: a.url,
+        published_at: a.publishedAt,
+      })).filter((r: Raw) => r.content));
+    } catch (e) {
+      console.warn(`news competitor term skipped for '${item.tag}':`, String((e as Error)?.message ?? e));
+    }
+  }
 
   return out;
 }
@@ -740,15 +883,13 @@ async function youtube(): Promise<Raw[]> {
       const desc = v.snippet?.description ?? "";
       const content = `${title} ${desc}`.trim();
       if (content) {
-        const fallbackPublishedAt = parseSourceTimestamp(v.snippet?.publishedAt);
-        if (!fallbackPublishedAt) continue;
         out.push({
           source: "youtube",
           external_id: `video_${vid}`,
           author: v.snippet?.channelTitle ?? null,
           content: content.slice(0, 2000),
           url: `https://youtube.com/watch?v=${vid}`,
-          published_at: fallbackPublishedAt,
+          published_at: v.snippet?.publishedAt ?? new Date().toISOString(),
         });
         lastYoutubeRunDebug.fallbackVideosUsed += 1;
       }
@@ -886,16 +1027,14 @@ Deno.serve(async (req) => {
     }
 
     const db = serviceClient();
+    activeCompetitorProfiles = await loadCompetitorProfiles(db);
     const collected: Raw[] = [];
     const perSource: Record<string, number> = {};
     const adapterDiagnostics: AdapterDiag[] = [];
 
     await Promise.all(
       ADAPTERS.map(async (adapter, idx) => {
-        const missingEnv = adapter.requiredEnv.filter((name) => {
-          const alternatives = name.split("|").map((v) => v.trim()).filter(Boolean);
-          return !alternatives.some((candidate) => !!Deno.env.get(candidate));
-        });
+        const missingEnv = adapter.requiredEnv.filter((name) => !Deno.env.get(name));
         if (missingEnv.length > 0) {
           adapterDiagnostics.push({
             name: adapter.name,
@@ -1030,6 +1169,21 @@ Deno.serve(async (req) => {
       await db.from("sources").update({ last_sync: new Date().toISOString() }).eq("id", src);
     }
 
+    let competitorMetrics = {
+      weeks: 0,
+      rows: 0,
+      profiles: activeCompetitorProfiles.length,
+      error: undefined as string | undefined,
+    };
+    try {
+      const computed = await updateCompetitorMetrics(db, activeCompetitorProfiles);
+      competitorMetrics = { ...computed, profiles: activeCompetitorProfiles.length, error: undefined };
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      console.error("competitor metrics update failed:", msg);
+      competitorMetrics = { weeks: 0, rows: 0, profiles: activeCompetitorProfiles.length, error: msg };
+    }
+
     return json({
       ingested,
       perSource,
@@ -1043,6 +1197,7 @@ Deno.serve(async (req) => {
         },
       },
       runInsights,
+      competitorMetrics,
       enrichmentQueued: rows.length,
       upsertErrors: upsertErrors.slice(0, 5),
       adapterDiagnostics,

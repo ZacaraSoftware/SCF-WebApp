@@ -21,10 +21,6 @@ function maxRowsForRange(rangeDays){
 }
 
 function topicLabelFromId(topicId){
-  const normalized = String(topicId ?? "").trim().toLowerCase();
-  if (!normalized || ["unknown", "uncategorized", "other", "misc"].includes(normalized)) {
-    return "Sonstiges (Nicht klassifiziert)";
-  }
   return String(topicId ?? "")
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ")
@@ -33,33 +29,15 @@ function topicLabelFromId(topicId){
 }
 
 export async function supabaseMentions(rangeDays = 60){
-  const endExclusiveIso = new Date().toISOString();
   const since = new Date(Date.now() - rangeDays * DAYMS).toISOString();
   const rowLimit = maxRowsForRange(rangeDays);
-  const queryWithFlavor = client()
+  const { data, error } = await client()
     .from("mentions")
-    .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status, primary_flavor, flavor_tags, flavor_confidence")
+    .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status")
     .gte("published_at", since)
-    .lt("published_at", endExclusiveIso)
     .eq("enrichment_status", "done")
     .order("published_at", { ascending: false })
     .limit(rowLimit);
-
-  let data;
-  let error;
-  ({ data, error } = await queryWithFlavor);
-
-  // Backward compatibility while migrations are rolling out.
-  if (error?.code === "42703" && String(error?.message ?? "").includes("primary_flavor")) {
-    ({ data, error } = await client()
-      .from("mentions")
-      .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status")
-      .gte("published_at", since)
-      .lt("published_at", endExclusiveIso)
-      .eq("enrichment_status", "done")
-      .order("published_at", { ascending: false })
-      .limit(rowLimit));
-  }
   if (error) throw error;
   return (data ?? []).map((m) => {
     const d = new Date(m.published_at);
@@ -74,40 +52,73 @@ export async function supabaseMentions(rangeDays = 60){
       publicSentimentLabel: m.public_sentiment_label ?? m.sentiment_label ?? "neutral",
       impactReason: m.impact_reason ?? "unknown",
       b2b: m.is_b2b,
-      primaryFlavor: String(m.primary_flavor ?? "none").trim().toLowerCase() || "none",
-      flavorTags: Array.isArray(m.flavor_tags)
-        ? m.flavor_tags.map((tag) => String(tag ?? "").trim().toLowerCase()).filter(Boolean)
-        : [],
-      flavorConfidence: Number(m.flavor_confidence ?? 0),
     };
   });
 }
 
-export async function ragChat(payload){
-  const body = Array.isArray(payload)
-    ? { mode: "chat", messages: payload }
-    : { mode: "chat", ...(payload ?? {}) };
-  const { data, error } = await client().functions.invoke("ai-query", {
-    body,
-  });
-  if (error) throw error;
-  return data;
+const COMP_PALETTE = ["#004b93", "#8a6d3b", "#6d5ce7", "#16a37b", "#0a6cd4", "#a35f00"];
+
+function toId(name){
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "") || "competitor";
 }
 
-export async function ragConversationHistory(sessionId, limit = 20){
-  const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "history_list", session_id: sessionId, limit },
-  });
-  if (error) throw error;
-  return data?.conversations ?? [];
+function colorFor(name){
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  return COMP_PALETTE[Math.abs(hash) % COMP_PALETTE.length];
 }
 
-export async function ragConversationMessages(sessionId, conversationId, limit = 120){
+export async function supabaseComp(){
+  const [{ data: metrics }, { data: profiles }] = await Promise.all([
+    client()
+      .from("competitor_metrics")
+      .select("competitor, week, net_sentiment, share_of_voice")
+      .order("week", { ascending: true }),
+    client()
+      .from("competitor_profiles")
+      .select("name, color")
+      .eq("active", true)
+      .order("name", { ascending: true }),
+  ]);
+
+  const rows = metrics ?? [];
+  const profileColor = Object.fromEntries((profiles ?? []).map((p) => [p.name, p.color]).filter(([, c]) => !!c));
+  const competitorNames = [...new Set(rows.map((r) => r.competitor))];
+
+  if (competitorNames.length === 0) return { names: [], series: [] };
+
+  const byWeekAndComp = new Map(rows.map((r) => [`${r.week}|${r.competitor}`, r]));
+
+  const names = competitorNames.map((name) => ({
+    id: toId(name),
+    name,
+    color: profileColor[name] ?? colorFor(name),
+    sov: rows.filter((r) => r.competitor === name).slice(-1)[0]?.share_of_voice ?? 0,
+  }));
+
+  const weeks = [...new Set(rows.map(r => r.week))];
+  const series = weeks.map((w) => {
+    const row = { week: `KW${new Date(w).getUTCDate()}` };
+    names.forEach((n) => {
+      const hit = byWeekAndComp.get(`${w}|${n.name}`);
+      row[n.id] = hit ? hit.net_sentiment : 0;
+    });
+    return row;
+  });
+  return { names, series };
+}
+
+export async function ragChat(messages){
   const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "history_get", session_id: sessionId, conversation_id: conversationId, limit },
+    body: { mode: "chat", messages },
   });
   if (error) throw error;
-  return data;
+  return data.answer;
 }
 
 export async function ragRecommendations(summary){
@@ -118,12 +129,11 @@ export async function ragRecommendations(summary){
   return data;
 }
 
-export async function supabaseSourceHealth(rangeDays = 90){
-  const endExclusiveIso = new Date().toISOString();
+export async function supabaseSourceHealth(rangeDays = 30){
   const since = new Date(Date.now() - rangeDays * DAYMS).toISOString();
   const [{ data: sources, error: sourcesError }, { data: mentions, error: mentionsError }] = await Promise.all([
     client().from("sources").select("id, label, status, last_sync").order("id", { ascending: true }),
-    client().from("mentions").select("source, published_at").gte("published_at", since).lt("published_at", endExclusiveIso).limit(10000),
+    client().from("mentions").select("source, published_at").gte("published_at", since).limit(10000),
   ]);
   if (sourcesError) throw sourcesError;
   if (mentionsError) throw mentionsError;
@@ -166,45 +176,15 @@ export async function supabaseYoutubeTermStats(limit = 20){
     .order("total_hits", { ascending: false })
     .limit(safeLimit);
   if (error) throw error;
-
-  const normalizeTerm = (term) => String(term ?? "")
-    .trim()
-    .replace(/^['"]+|['"]+$/g, "")
-    .replace(/\s{2,}/g, " ");
-
-  const byTerm = new Map();
-  for (const row of data ?? []) {
-    const term = normalizeTerm(row.term);
-    if (!term) continue;
-    const key = term.toLowerCase();
-    const prev = byTerm.get(key);
-    const current = {
-      term,
-      totalRuns: Number(row.total_runs ?? 0),
-      totalHits: Number(row.total_hits ?? 0),
-      lastHits: Number(row.last_hits ?? 0),
-      ewmaHits: Number(row.ewma_hits ?? 0),
-      lastRunAt: row.last_run_at,
-      updatedAt: row.updated_at,
-    };
-    if (!prev) {
-      byTerm.set(key, current);
-      continue;
-    }
-    byTerm.set(key, {
-      term: prev.term.length >= current.term.length ? prev.term : current.term,
-      totalRuns: prev.totalRuns + current.totalRuns,
-      totalHits: prev.totalHits + current.totalHits,
-      lastHits: Math.max(prev.lastHits, current.lastHits),
-      ewmaHits: Math.max(prev.ewmaHits, current.ewmaHits),
-      lastRunAt: new Date(prev.lastRunAt ?? 0) > new Date(current.lastRunAt ?? 0) ? prev.lastRunAt : current.lastRunAt,
-      updatedAt: new Date(prev.updatedAt ?? 0) > new Date(current.updatedAt ?? 0) ? prev.updatedAt : current.updatedAt,
-    });
-  }
-
-  return Array.from(byTerm.values())
-    .sort((a, b) => b.ewmaHits - a.ewmaHits || b.totalHits - a.totalHits)
-    .slice(0, safeLimit);
+  return (data ?? []).map((row) => ({
+    term: row.term,
+    totalRuns: Number(row.total_runs ?? 0),
+    totalHits: Number(row.total_hits ?? 0),
+    lastHits: Number(row.last_hits ?? 0),
+    ewmaHits: Number(row.ewma_hits ?? 0),
+    lastRunAt: row.last_run_at,
+    updatedAt: row.updated_at,
+  }));
 }
 
 export async function supabaseYoutubeQuotaToday(){
