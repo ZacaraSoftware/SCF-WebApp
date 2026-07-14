@@ -31,6 +31,13 @@ const QUERIES = [
 ];
 const MAX_ITEMS_PER_RUN = 80;
 const ADAPTER_TIMEOUT_MS = 60000;
+const SOURCE_MAX_AGE_DAYS: Record<string, number> = {
+  reddit: 30,
+  news: 30,
+  youtube: 30,
+  facebook: 30,
+  instagram: 30,
+};
 const MAX_YOUTUBE_TERMS_PER_RUN = 19; // Option A: Aggressive - all 19 keywords
 const YOUTUBE_QUOTA_SOFT_LIMIT = 3000; // If quota < this, reduce collection
 const MAX_YOUTUBE_ITEMS_FOR_PIPELINE = 80;
@@ -277,6 +284,18 @@ function noiseReason(text: string, source: string): string | null {
   return null;
 }
 
+function parsePublishedAt(value: string): number | null {
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return null;
+  return ts;
+}
+
+function isFreshForSource(source: string, publishedAtTs: number): boolean {
+  const maxAgeDays = SOURCE_MAX_AGE_DAYS[source] ?? 30;
+  const oldestAllowed = Date.now() - (maxAgeDays * DAYMS);
+  return publishedAtTs >= oldestAllowed;
+}
+
 async function fetchJsonChecked(url: string, timeoutMs = 3200): Promise<any> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -307,6 +326,18 @@ function prepareItems(items: Raw[]): { prepared: Prepared[]; stats: FilterStats 
   const seen = new Set<string>();
 
   for (const item of items) {
+    const publishedAtTs = parsePublishedAt(item.published_at);
+    if (publishedAtTs === null) {
+      stats.dropped += 1;
+      stats.reasons.invalid_published_at = (stats.reasons.invalid_published_at ?? 0) + 1;
+      continue;
+    }
+    if (!isFreshForSource(item.source, publishedAtTs)) {
+      stats.dropped += 1;
+      stats.reasons.stale_published_at = (stats.reasons.stale_published_at ?? 0) + 1;
+      continue;
+    }
+
     const content = normalizeText(item.content ?? "");
     const key = `${item.source}|${item.external_id}|${content.toLowerCase()}`;
     if (seen.has(key)) {
@@ -649,15 +680,18 @@ async function reddit(): Promise<Raw[]> {
   if (!token) return [];
 
   const subs = ["de", "Finanzen", "Ernaehrung", "fitness"];
+  const sinceTs = Date.now() - ((SOURCE_MAX_AGE_DAYS.reddit ?? 30) * DAYMS);
   const out: Raw[] = [];
   for (const sub of subs) {
     const q = encodeURIComponent(QUERIES.join(" OR "));
     const res = await fetch(
-      `https://oauth.reddit.com/r/${sub}/search?q=${q}&restrict_sr=1&sort=new&limit=10`,
+      `https://oauth.reddit.com/r/${sub}/search?q=${q}&restrict_sr=1&sort=new&t=month&limit=10`,
       { headers: { Authorization: `Bearer ${token}`, "User-Agent": ua } },
     ).then((r) => r.json());
     for (const c of res?.data?.children ?? []) {
       const d = c.data;
+      const publishedAtTs = Number(d.created_utc ?? 0) * 1000;
+      if (!publishedAtTs || publishedAtTs < sinceTs) continue;
       const text = `${d.title ?? ""} ${d.selftext ?? ""}`.trim();
       if (!text) continue;
       out.push({
@@ -677,10 +711,11 @@ async function news(): Promise<Raw[]> {
   const key = Deno.env.get("NEWSAPI_KEY");
   if (!key) return [];
   const out: Raw[] = [];
+  const from = new Date(Date.now() - ((SOURCE_MAX_AGE_DAYS.news ?? 30) * DAYMS)).toISOString().slice(0, 10);
 
   const broadQ = encodeURIComponent(QUERIES.join(" OR "));
   const broadRes = await fetch(
-    `https://newsapi.org/v2/everything?q=${broadQ}&language=de&sortBy=publishedAt&pageSize=10&apiKey=${key}`,
+    `https://newsapi.org/v2/everything?q=${broadQ}&language=de&sortBy=publishedAt&pageSize=10&from=${from}&apiKey=${key}`,
   ).then((r) => r.json());
   out.push(...(broadRes?.articles ?? []).map((a: any): Raw => ({
     source: "news",
@@ -703,7 +738,7 @@ async function news(): Promise<Raw[]> {
     try {
       const q = encodeURIComponent(item.query);
       const res = await fetch(
-        `https://newsapi.org/v2/everything?q=${q}&language=de&sortBy=publishedAt&pageSize=4&apiKey=${key}`,
+        `https://newsapi.org/v2/everything?q=${q}&language=de&sortBy=publishedAt&pageSize=4&from=${from}&apiKey=${key}`,
       ).then((r) => r.json());
 
       out.push(...(res?.articles ?? []).map((a: any): Raw => ({
@@ -805,7 +840,7 @@ async function youtube(): Promise<Raw[]> {
   const termList = pickAdaptiveYoutubeTerms(strategy.maxTerms, pool, termStats);
   console.log(`[YouTube] Adaptive Strategy: ${termList.length}/${pool.length} terms, ${strategy.maxVideosPerTerm} videos/term, max ${strategy.maxVideosTotal} total, ${strategy.maxCommentsPerVideo} comments/video. Available quota: ${strategy.availableQuota}`);
   
-  const publishedAfter = encodeURIComponent(new Date(Date.now() - 60 * 86400000).toISOString());
+  const publishedAfter = encodeURIComponent(new Date(Date.now() - ((SOURCE_MAX_AGE_DAYS.youtube ?? 30) * DAYMS)).toISOString());
   lastYoutubeRunDebug = {
     terms: [...termList],
     searchHitsByTerm: {},
@@ -825,7 +860,7 @@ async function youtube(): Promise<Raw[]> {
       );
       if (!(search?.items?.length > 0)) {
         search = await fetchJsonChecked(
-          `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&order=relevance&maxResults=${strategy.maxVideosPerTerm}&q=${q}&key=${key}`,
+          `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&order=relevance&maxResults=${strategy.maxVideosPerTerm}&publishedAfter=${publishedAfter}&q=${q}&key=${key}`,
         );
       }
     } catch (e) {
@@ -922,14 +957,17 @@ async function facebookInstagram(): Promise<Raw[]> {
   if (!accessToken || !pageId) return [];
 
   const out: Raw[] = [];
+  const sinceIso = new Date(Date.now() - ((SOURCE_MAX_AGE_DAYS.facebook ?? 30) * DAYMS)).toISOString();
+  const sinceEpoch = Math.floor(new Date(sinceIso).getTime() / 1000);
 
   try {
     const postsRes = await fetch(
-      `https://graph.facebook.com/v18.0/${pageId}/feed?fields=id,message,created_time,permalink_url&limit=10&access_token=${accessToken}`,
+      `https://graph.facebook.com/v18.0/${pageId}/feed?fields=id,message,created_time,permalink_url&since=${sinceEpoch}&limit=10&access_token=${accessToken}`,
     ).then((r) => r.json());
 
     for (const post of postsRes?.data ?? []) {
       if (!post.message) continue;
+      if (parsePublishedAt(post.created_time) === null) continue;
 
       out.push({
         source: "facebook",
@@ -941,11 +979,12 @@ async function facebookInstagram(): Promise<Raw[]> {
       });
 
       const commentsRes = await fetch(
-        `https://graph.facebook.com/v18.0/${post.id}/comments?fields=id,message,from,created_time&limit=5&access_token=${accessToken}`,
+        `https://graph.facebook.com/v18.0/${post.id}/comments?fields=id,message,from,created_time&since=${sinceEpoch}&limit=5&access_token=${accessToken}`,
       ).then((r) => r.json());
 
       for (const comment of commentsRes?.data ?? []) {
         if (!comment.message) continue;
+        if (parsePublishedAt(comment.created_time) === null) continue;
         out.push({
           source: "facebook",
           external_id: `comment_${comment.id}`,
@@ -968,6 +1007,8 @@ async function facebookInstagram(): Promise<Raw[]> {
     ).then((r) => r.json());
 
     for (const media of mediaRes?.data ?? []) {
+      const mediaTs = parsePublishedAt(media.timestamp);
+      if (mediaTs === null || !isFreshForSource("instagram", mediaTs)) continue;
       if (media.caption) {
         out.push({
           source: "instagram",
@@ -980,7 +1021,7 @@ async function facebookInstagram(): Promise<Raw[]> {
       }
 
       const commentsRes = await fetch(
-        `https://graph.facebook.com/v18.0/${media.id}/comments?fields=id,text,username,timestamp&limit=5&access_token=${accessToken}`,
+        `https://graph.facebook.com/v18.0/${media.id}/comments?fields=id,text,username,timestamp&since=${sinceEpoch}&limit=5&access_token=${accessToken}`,
       ).then((r) => r.json());
 
       for (const comment of commentsRes?.data ?? []) {

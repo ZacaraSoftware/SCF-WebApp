@@ -732,7 +732,26 @@ function buildExportReport({ agg, liveSignals, range, title, view }) {
     recommendations: topThree,
   };
 }
-const dateLabel = d => `${String(d.getDate()).padStart(2,"0")}.${String(d.getMonth()+1).padStart(2,"0")}`;
+const toUtcDayKey = (value) => {
+  const d = value instanceof Date ? value : new Date(value);
+  return d.toISOString().slice(0, 10);
+};
+
+const fromUtcDayKey = (key) => {
+  const [y, m, d] = key.split("-").map((n) => Number(n));
+  return new Date(Date.UTC(y, m - 1, d));
+};
+
+const addUtcDays = (date, days) => {
+  const next = new Date(date.getTime());
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+};
+
+const dateLabel = (value) => {
+  const d = value instanceof Date ? value : fromUtcDayKey(String(value));
+  return `${String(d.getUTCDate()).padStart(2,"0")}.${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+};
 
 const REGION_RULES = [
   { id:"bw", label:"Baden-Württemberg", rx:/\bbaden[-\s]?württemberg\b|\bbw\b/i },
@@ -806,12 +825,14 @@ function aggregate(mentions, range, topicCatalog){
   const curVol = cur.length, prevVol = prev.length;
   // daily series
   const byDay = {};
-  cur.forEach(m => { const k = dateLabel(m.date); (byDay[k] ??= []).push(m.sentiment); });
+  cur.forEach(m => { const k = toUtcDayKey(m.date); (byDay[k] ??= []).push(m.sentiment); });
   const series = [];
-  for (let d = range-1; d >= 0; d--){
-    const day = new Date(NOW.getTime() - d*DAYMS); const k = dateLabel(day);
+  const todayUtc = fromUtcDayKey(toUtcDayKey(NOW));
+  for (let d = range - 1; d >= 0; d--){
+    const day = addUtcDays(todayUtc, -d);
+    const k = toUtcDayKey(day);
     const vals = byDay[k] || [];
-    series.push({ day:k, net: vals.length ? +(vals.reduce((a,b)=>a+b,0)/vals.length*100).toFixed(0):0, vol: vals.length });
+    series.push({ day: dateLabel(day), net: vals.length ? +(vals.reduce((a,b)=>a+b,0)/vals.length*100).toFixed(0):0, vol: vals.length });
   }
   // by source / topic
   const bySource = SOURCES.map(s => {
@@ -1191,12 +1212,13 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
   const topicById = Object.fromEntries(topicCatalog.map((t) => [t.id, t]));
   const focus = configuredFocus.filter((id) => topicById[id]);
   const buckets = Math.min(range, 30);
-  const todayStartTs = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate()).getTime();
+  const todayUtc = fromUtcDayKey(toUtcDayKey(NOW));
   const series = [];
   for (let d = buckets; d >= 1; d--){
-    const day = new Date(todayStartTs - d * DAYMS); const lo = day.getTime(), hi = lo + DAYMS;
+    const day = addUtcDays(todayUtc, -d);
+    const dayKey = toUtcDayKey(day);
     const row = { day: dateLabel(day) };
-    focus.forEach(f=>{ row[f]=mentions.filter(m=>m.topic===f && m.ts>=lo && m.ts<hi).length; });
+    focus.forEach(f=>{ row[f]=mentions.filter(m=>m.topic===f && toUtcDayKey(m.date)===dayKey).length; });
     series.push(row);
   }
   const labelFor = (id) => topicById[id]?.label ?? topicLabelFromId(id);
