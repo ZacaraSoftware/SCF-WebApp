@@ -6,6 +6,24 @@ import { callClaude } from "../_shared/llm.ts";
 
 type ChatRole = "user" | "assistant";
 type ChatMessage = { role: ChatRole; content: string };
+type MentionHit = {
+  content: string;
+  source: string;
+  source_context: string | null;
+  author: string | null;
+  url: string | null;
+  like_count: number | null;
+  reply_count: number | null;
+  topic: string;
+  public_sentiment: number;
+  public_sentiment_label: string;
+  business_impact: number;
+  business_impact_label: string;
+  impact_reason: string;
+  published_at: string;
+  similarity: number;
+  rrf_score: number;
+};
 type MemoryEnvelope = {
   summary: string;
   facts: string[];
@@ -70,6 +88,47 @@ function uniqueStringList(values: unknown[], limit: number): string[] {
     if (result.length >= limit) break;
   }
   return result;
+}
+
+function isTopCommentQuestion(text: string): boolean {
+  return /(top\s*3|drei\s+komment|3\s+komment|meisten\s+interaktionen|likes|antwort(en)?|originalkomment|zitiere|quote)/i.test(text)
+    && /(komment|beleg|impact|interaktion|engagement)/i.test(text);
+}
+
+function interactionScore(hit: Pick<MentionHit, "like_count" | "reply_count">): number {
+  return Number(hit.like_count ?? 0) + (Number(hit.reply_count ?? 0) * 2);
+}
+
+function compactText(text: string, maxLen = 360): string {
+  const plain = String(text ?? "").replace(/\s+/g, " ").trim();
+  return plain.length > maxLen ? `${plain.slice(0, maxLen - 1)}…` : plain;
+}
+
+function escapeMarkdown(text: string): string {
+  return String(text ?? "").replace(/([\\`*_{}\[\]()#+\-.!|>])/g, "\\$1");
+}
+
+function formatTopComments(rows: MentionHit[]): string {
+  if (rows.length === 0) {
+    return "Ich habe keine passenden Originalkommentare gefunden.";
+  }
+
+  const intro = "Hier sind die 3 relevantesten Originalkommentare nach Interaktions-Score (Likes + 2×Antworten), gefiltert auf den angefragten Themenkontext.";
+  const items = rows.map((row, index) => {
+    const interaction = interactionScore(row);
+    const context = row.source_context ? `\n\n**Kontext:** ${escapeMarkdown(compactText(row.source_context, 180))}` : "";
+    const url = row.url ? `[Original öffnen](${row.url})` : "Kein Original-Link verfügbar";
+    return [
+      `${index + 1}. **${escapeMarkdown(row.author ?? row.source)}** · ${escapeMarkdown(row.source)} · Interaktions-Score ${interaction}`,
+      `> ${escapeMarkdown(compactText(row.content))}`,
+      context,
+      `- Likes: ${Number(row.like_count ?? 0)} · Antworten: ${Number(row.reply_count ?? 0)}`,
+      `- Nordzucker-Impact: ${escapeMarkdown(String(row.business_impact_label ?? "neutral"))} (${Number(row.business_impact ?? 0).toFixed(2)}) · Grund: ${escapeMarkdown(row.impact_reason ?? "unknown")}`,
+      `- ${url}`,
+    ].filter(Boolean).join("\n");
+  });
+
+  return [intro, "", ...items].join("\n\n");
 }
 
 function defaultMemory(row?: Partial<ConversationRow>): MemoryEnvelope {
@@ -269,12 +328,14 @@ Deno.serve(async (req) => {
         ).trim()
         : "Risiken, Chancen und Stimmungstrends rund um Zucker, Softdrinks und süße Speisen";
 
+    const topCommentMode = safeMode === "chat" && isTopCommentQuestion(query);
+
     // Top-k relevante Mentions per Vektor-Ähnlichkeit holen
     const qvec = await embed(query);
     const { data: hits } = await db.rpc("match_mentions", {
       query_embedding: qvec,
       query_text: query,
-      match_count: safeMode === "recommendations" ? 24 : 40,
+      match_count: topCommentMode ? 120 : safeMode === "recommendations" ? 24 : 40,
       since,
     });
 
@@ -283,7 +344,9 @@ Deno.serve(async (req) => {
       .select("id", { count: "exact", head: true })
       .eq("enrichment_status", "done");
 
-    const context = (hits ?? [])
+    const hitRows = (hits ?? []) as MentionHit[];
+
+    const context = hitRows
       .map((h: any, i: number) =>
         `[${i + 1}] (${h.source}, ${h.topic}, Public ${h.public_sentiment}, Nordzucker-Impact ${h.business_impact}, Grund ${h.impact_reason}) ${h.content}`)
       .join("\n");
@@ -369,6 +432,68 @@ Deno.serve(async (req) => {
       `Wichtige Fakten:\n${memory.facts.length ? memory.facts.map((f, idx) => `${idx + 1}. ${f}`).join("\n") : "(keine)"}`,
       `Bisherige Entscheidungen:\n${memory.decisions.length ? memory.decisions.map((d, idx) => `${idx + 1}. ${d}`).join("\n") : "(keine)"}`,
     ].join("\n\n");
+
+    if (topCommentMode) {
+      const ranked = hitRows
+        .slice()
+        .sort((a, b) =>
+          interactionScore(b) - interactionScore(a)
+          || Math.abs(Number(b.business_impact ?? 0)) - Math.abs(Number(a.business_impact ?? 0))
+          || Number(b.rrf_score ?? 0) - Number(a.rrf_score ?? 0)
+        )
+        .slice(0, 3);
+      const answer = formatTopComments(ranked);
+
+      await db.from("ai_messages").insert([
+        {
+          conversation_id: conversation.id,
+          role: "user",
+          content: latestQuestion,
+          retrieval_hits: hitRows.length,
+        },
+        {
+          conversation_id: conversation.id,
+          role: "assistant",
+          content: answer,
+          retrieval_hits: ranked.length,
+        },
+      ]);
+
+      const updatedMemory = await updateConversationMemory(memory, latestQuestion, answer);
+
+      await db
+        .from("ai_conversations")
+        .update({
+          title: conversation.title || deriveTitle(latestQuestion),
+          last_question: latestQuestion.slice(0, 500),
+          message_count: Number(conversation.message_count ?? 0) + 2,
+          memory_summary: updatedMemory.summary,
+          memory_facts: updatedMemory.facts,
+          memory_decisions: updatedMemory.decisions,
+        })
+        .eq("id", conversation.id);
+
+      await db.from("ai_runs").insert({
+        kind: "chat",
+        prompt: latestQuestion,
+        response: {
+          answer,
+          conversation_id: conversation.id,
+          corpus_count: Number(corpusCount ?? 0),
+          mode: "top_comments",
+          citations: ranked,
+        },
+      });
+
+      return json({
+        answer,
+        conversation_id: conversation.id,
+        memory: updatedMemory,
+        corpus_count: Number(corpusCount ?? 0),
+        mode: "top_comments",
+        citations: ranked,
+      }, 200, req);
+    }
 
     const system =
       "Du bist der KI-Analyst der Smart-Customer-Feedback-Plattform von Nordzucker AG. " +

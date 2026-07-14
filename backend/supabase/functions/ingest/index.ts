@@ -166,6 +166,9 @@ type Raw = {
   content: string;
   url: string | null;
   published_at: string;
+  source_context?: string | null;
+  like_count?: number | null;
+  reply_count?: number | null;
 };
 
 type Prepared = Raw & {
@@ -900,14 +903,16 @@ async function youtube(): Promise<Raw[]> {
     for (const t of ct?.items ?? []) {
       const s = t.snippet?.topLevelComment?.snippet;
       if (!s?.textOriginal) continue;
-      const videoTitle = v.snippet?.title ? `${v.snippet.title} ` : "";
       out.push({
         source: "youtube",
         external_id: t.id,
         author: s.authorDisplayName ?? null,
-        content: `${videoTitle}${s.textOriginal}`.slice(0, 2000),
+        content: String(s.textOriginal).slice(0, 2000),
         url: `https://youtube.com/watch?v=${vid}`,
         published_at: s.publishedAt,
+        source_context: v.snippet?.title ?? null,
+        like_count: Number(s.likeCount ?? 0),
+        reply_count: Number(t.snippet?.totalReplyCount ?? 0),
       });
       commentCount += 1;
       lastYoutubeRunDebug.acceptedComments += 1;
@@ -925,6 +930,7 @@ async function youtube(): Promise<Raw[]> {
           content: content.slice(0, 2000),
           url: `https://youtube.com/watch?v=${vid}`,
           published_at: v.snippet?.publishedAt ?? new Date().toISOString(),
+          source_context: v.snippet?.title ?? null,
         });
         lastYoutubeRunDebug.fallbackVideosUsed += 1;
       }
@@ -1185,6 +1191,9 @@ Deno.serve(async (req) => {
       content: item.content,
       url: item.url,
       published_at: item.published_at,
+      source_context: item.source_context ?? null,
+      like_count: item.like_count ?? null,
+      reply_count: item.reply_count ?? null,
       topic: "unknown",
       sentiment: 0,
       sentiment_label: "neutral",
