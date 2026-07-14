@@ -2305,7 +2305,7 @@ Aktive Signale: ${signalTxt}.`;
           <div className="spacer"/>
           {(view==="dashboard"||view==="trends") && (
             <div className="range">
-              {[7,14,30].map(r=>(<button key={r} className={range===r?"on":""} onClick={()=>setRange(r)}>{r} Tage</button>))}
+              {[7,14,30,90].map(r=>(<button key={r} className={range===r?"on":""} onClick={()=>setRange(r)}>{r} Tage</button>))}
             </div>
           )}
           {view!=="chat" && view!=="sources" && (

@@ -17,6 +17,7 @@ function maxRowsForRange(rangeDays){
   if (rangeDays <= 7) return 800;
   if (rangeDays <= 14) return 1400;
   if (rangeDays <= 30) return 2400;
+  if (rangeDays <= 90) return 5000;
   return 5000;
 }
 
