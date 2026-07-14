@@ -6,13 +6,13 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from "recharts";
 import {
-  LayoutDashboard, TrendingUp, Users, Lightbulb, MessageSquare, Plug,
+  LayoutDashboard, TrendingUp, Lightbulb, MessageSquare, Plug,
   Download, FileText, AlertTriangle, ArrowUpRight, ArrowDownRight,
   Sparkles, Menu, X, Sun, ShieldAlert, Activity, CheckCircle2,
   Send, Loader2, Database, Minus,
 } from "lucide-react";
 import {
-  loadMentions, loadCompetitors, loadSourceHealth, aiChat, aiRecommendations,
+  loadMentions, loadSourceHealth, aiChat, aiRecommendations,
   LIVE, SOURCES, TOPICS, ANCHOR, DAYMS, SOURCE_INFO, loadAppSettings, saveAppSettings, loadYoutubeTermStats,
 } from "./data";
 import { YoutubeQuotaWidget } from "./YoutubeQuotaWidget";
@@ -513,22 +513,11 @@ const signed = (n) => `${n > 0 ? "+" : ""}${n}`;
 const priorityRank = { Hoch: 3, Mittel: 2, Niedrig: 1 };
 const clampScore = (n) => Math.max(0, Math.min(100, Math.round(n)));
 
-function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
+function buildExportReport({ agg, liveSignals, range, title, view }) {
   if (!agg) return null;
 
   const topTopicByVolume = agg.byTopic[0] ?? null;
   const biggestRisk = [...agg.byTopic].sort((a, b) => a.net - b.net)[0] ?? null;
-  const latestComp = comp?.series?.[comp.series.length - 1] ?? {};
-  const topCompetitor = comp?.names?.length
-    ? [...comp.names]
-      .map((item) => ({
-        name: item.name,
-        score: Number(latestComp[item.id] ?? 0),
-        sov: Number(item.sov ?? 0),
-      }))
-      .sort((a, b) => b.score - a.score || b.sov - a.sov)[0]
-    : null;
-
   const topicById = Object.fromEntries((agg.byTopic ?? []).map((topic) => [topic.id, topic]));
   const recommendations = [];
   const pushRecommendation = (item) => {
@@ -622,19 +611,6 @@ function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
     });
   }
 
-  if (topCompetitor && topCompetitor.score > agg.curNet + 10) {
-    const score = 60 + Math.min(30, (topCompetitor.score - agg.curNet));
-    pushRecommendation({
-      priority: "Mittel",
-      owner: "Competitive Intelligence",
-      horizon: "14-30 Tage",
-      action: `Wettbewerber ${topCompetitor.name} kommunikativ kontern`,
-      reason: `Wettbewerber erreicht ${signed(topCompetitor.score)} bei ${topCompetitor.sov}% Share of Voice und liegt deutlich ueber Nordzucker.`,
-      successKpi: "Gap im Net-Impact < 5 Punkte",
-      score,
-    });
-  }
-
   if (liveSignals?.length) {
     const signal = liveSignals[0];
     const score = 50 + Math.min(20, Math.round((signal.score ?? 0.2) * 100 / 6));
@@ -662,7 +638,6 @@ function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
   }
 
   const viewBoost = (item) => {
-    if (view === "comp" && item.owner === "Competitive Intelligence") return 10;
     if (view === "bi" && (item.owner === "Category Management" || item.owner === "Pricing + Vertrieb")) return 8;
     if (view === "trends" && item.owner === "Market Intelligence") return 10;
     if (view === "dashboard" && item.priority === "Hoch") return 6;
@@ -720,17 +695,13 @@ function buildExportReport({ agg, comp, liveSignals, range, title, view }) {
   const summaryRows = [
     ["Report", title],
     ["Zeitraum", `Letzte ${range} Tage`],
-    ["Report-Fokus", view === "comp" ? "Wettbewerb" : view === "bi" ? "BI Steuerung" : view === "trends" ? "Risiko- und Signalfrueherkennung" : "Management Snapshot"],
+    ["Report-Fokus", view === "bi" ? "BI Steuerung" : view === "trends" ? "Risiko- und Signalfrueherkennung" : "Management Snapshot"],
     ["Business Impact (Net)", `${signed(agg.curNet)} (Delta ${signed(agg.netDelta)})`],
     ["Public Sentiment (Net)", `${signed(agg.curPublicNet)} (Delta ${signed(agg.publicNetDelta)})`],
     ["Erwaehnungen", `${agg.curVol} (Delta ${signed(agg.volDelta)}%)`],
     ["Positiver Business-Anteil", `${agg.posShare}%`],
     ["Top-Thema nach Volumen", topTopicByVolume ? `${topTopicByVolume.label} (${topTopicByVolume.vol})` : "n/a"],
   ];
-  if (topCompetitor) {
-    summaryRows.push(["Staerkster Wettbewerber", `${topCompetitor.name} (${signed(topCompetitor.score)}, SoV ${topCompetitor.sov}%)`]);
-  }
-
   return {
     generatedAt: NOW.toLocaleDateString("de-DE"),
     summaryRows,
@@ -1248,96 +1219,6 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
             ))}
           </div>
         )}
-      </div>
-    </>
-  );
-}
-
-/* =========================  WETTBEWERB  ========================= */
-function Competition({ onExport, comp }){
-  if (!comp) return null;
-  if (!comp.names?.length || !comp.series?.length) {
-    return (
-      <div className="card">
-        <div className="empty">
-          <AlertTriangle size={28} style={{ color: "var(--neu)" }} />
-          <div style={{ fontWeight: 600, color: "var(--ink)" }}>Noch keine Wettbewerbsdaten vorhanden</div>
-          <div style={{ maxWidth: 560, fontSize: 12.5 }}>
-            Die Wettbewerbsansicht wird automatisch befüllt, sobald die Ingestion Wettbewerber-Mentions
-            aus den Quellen sammelt und daraus Wochenmetriken erzeugt.
-          </div>
-        </div>
-      </div>
-    );
-  }
-  const latest = comp.series[comp.series.length-1] || {};
-  const ranked = comp.names.map(n=>({ ...n, score: latest[n.id] ?? 0 })).sort((a,b)=>b.score-a.score);
-  const sov = comp.names.map(n=>({ name:n.name, value:n.sov, color:n.color }));
-  return (
-    <>
-      <p className="lede" style={{marginBottom:20}}>
-        Vergleich der öffentlichen Markenstimmung und des Share of Voice gegenüber den wichtigsten Wettbewerbern
-        im europäischen Zuckermarkt.
-      </p>
-      <div className="grid g-split-1-1" style={{marginBottom:16}}>
-        <div className="card">
-          <div className="card-h"><div><div className="card-t">Markenstimmung im Verlauf</div>
-            <div className="card-s">12 Wochen, je Hersteller</div></div></div>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={comp.series} margin={{top:5,right:8,left:-22,bottom:0}}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false}/>
-              <XAxis dataKey="week" tick={{fontSize:10.5,fill:"#8694a8"}} axisLine={false} tickLine={false} minTickGap={18}/>
-              <YAxis tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false}/>
-              <Tooltip content={<ChartTip/>}/>
-              {comp.names.map(n=><Line key={n.id} type="monotone" dataKey={n.id} name={n.name}
-                stroke={n.color} strokeWidth={n.id==="nordzucker"?3:1.8} dot={false}
-                strokeDasharray={n.id==="nordzucker"?"":""}/>)}
-            </LineChart>
-          </ResponsiveContainer>
-          <div style={{display:"flex",gap:14,flexWrap:"wrap",marginTop:8}}>
-            {comp.names.map(n=>(<span key={n.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"var(--ink-2)"}}>
-              <span className="dot" style={{background:n.color}}/>{n.name}</span>))}
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-h"><div><div className="card-t">Share of Voice</div>
-            <div className="card-s">Anteil am Gesamtgesprächsvolumen</div></div></div>
-          <ResponsiveContainer width="100%" height={200}>
-            <PieChart>
-              <Pie data={sov} dataKey="value" nameKey="name" innerRadius={48} outerRadius={76} paddingAngle={2}>
-                {sov.map((e,i)=><Cell key={i} fill={e.color}/>)}
-              </Pie>
-              <Tooltip content={<ChartTip unit="%"/>}/>
-            </PieChart>
-          </ResponsiveContainer>
-          <div style={{display:"flex",flexDirection:"column",gap:5,marginTop:4}}>
-            {sov.map((s,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:12.5}}>
-              <span className="dot" style={{background:s.color}}/>{s.name}
-              <span style={{marginLeft:"auto",fontWeight:600}}>{s.value}%</span></div>))}
-          </div>
-        </div>
-      </div>
-      <div className="card">
-        <div className="card-h">
-          <div className="card-t">Benchmark-Tabelle</div>
-          <button className="btn no-print" onClick={onExport}><Download size={14}/> CSV</button>
-        </div>
-        <div className="tbl-shell tbl-scroll">
-        <table className="tbl tbl-wide">
-          <thead><tr><th>Rang</th><th>Hersteller</th><th>Markenstimmung</th><th>Share of Voice</th><th>Bewertung</th></tr></thead>
-          <tbody>
-            {ranked.map((r,i)=>(
-              <tr key={r.id}>
-                <td style={{fontWeight:600,color:"var(--ink-3)"}}>{i+1}</td>
-                <td style={{fontWeight:600}}>{r.name}{r.id==="nordzucker"&&<span className="tag" style={{marginLeft:8,background:"var(--nz-100)",color:"var(--nz-700)"}}>Wir</span>}</td>
-                <td style={{fontWeight:600,color:sentColor(r.score/100)}}>{r.score>0?"+":""}{r.score}</td>
-                <td>{r.sov}%</td>
-                <td><span className={`pill ${sentClass(r.score/100)}`}>{r.score>15?"positiv":r.score<-15?"negativ":"neutral"}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
       </div>
     </>
   );
@@ -2028,7 +1909,6 @@ const NAV = [
   { id:"dashboard", label:"Dashboard", icon:LayoutDashboard, sec:"Übersicht" },
   { id:"trends",    label:"Trends & Risiken", icon:TrendingUp, sec:"Übersicht" },
   { id:"bi",        label:"BI Cube", icon:FileText, sec:"Übersicht" },
-  { id:"comp",      label:"Wettbewerb", icon:Users, sec:"Analyse" },
   { id:"recs",      label:"Empfehlungen & Prognosen", icon:Lightbulb, sec:"Analyse" },
   { id:"chat",      label:"KI-Assistent", icon:MessageSquare, sec:"Analyse" },
   { id:"sources",   label:"Datenquellen", icon:Database, sec:"System" },
@@ -2036,7 +1916,7 @@ const NAV = [
 const TITLES = {
   dashboard:["Übersicht","Stimmungs-Dashboard"], trends:["Übersicht","Trends & Risiken"],
   bi:["Übersicht","BI Cube & Dimensionen"],
-  comp:["Analyse","Wettbewerbs-Benchmarking"], recs:["Analyse","Empfehlungen & Prognosen"],
+  recs:["Analyse","Empfehlungen & Prognosen"],
   chat:["Analyse","KI-Assistent"], sources:["System","Datenquellen & Schnittstellen"],
 };
 
@@ -2047,7 +1927,6 @@ export default function App(){
   const [range, setRange] = useState(7);
   const [open, setOpen] = useState(false);
   const [mentions, setMentions] = useState([]);
-  const [comp, setComp] = useState(null);
   const [sourceHealth, setSourceHealth] = useState([]);
   const [appSettings, setAppSettings] = useState({});
   const [loading, setLoading] = useState(true);
@@ -2076,14 +1955,12 @@ export default function App(){
       }
 
       // Schneller Start: 30 Tage reichen für alle aktuellen Dashboard-Filter.
-      const [data, competitors, sourceStatus, settings] = await Promise.all([
+      const [data, sourceStatus, settings] = await Promise.all([
         loadMentions(30),
-        loadCompetitors(),
         loadSourceHealth(30).catch(() => []),
         loadAppSettings().catch(() => ({})),
       ]);
       setMentions(data);
-      setComp(competitors);
       setSourceHealth(sourceStatus);
       setAppSettings(settings);
       localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), mentions: data }));
@@ -2130,7 +2007,6 @@ export default function App(){
   const dataSummary = useMemo(()=>{
     if (!agg) return "";
     const topics = agg.byTopic.slice(0,6).map(t=>`${t.label}: Impact ${t.net>0?"+":""}${t.net} (${t.vol} Erw.)`).join("; ");
-    const compTxt = comp ? comp.names.map(n=>`${n.name}: ${comp.series[comp.series.length-1]?.[n.id] ?? 0}, SoV ${n.sov}%`).join("; ") : "";
     const signalTxt = liveSignals.length
       ? liveSignals.map((s, i) => `(${i + 1}) ${s.title}`).join("; ")
       : "keine belastbaren Signale im aktuellen Fenster";
@@ -2139,24 +2015,19 @@ export default function App(){
 Geschäftsauswirkung für Nordzucker: ${agg.curNet} (Δ ${agg.netDelta} ggü. Vorperiode).
 Erwähnungen: ${agg.curVol} (Δ ${agg.volDelta}%). Geschäftlich positiver Anteil: ${agg.posShare}%.
 Geschäftsauswirkung nach Thema: ${topics}.
-Aktive Signale: ${signalTxt}.
-Wettbewerb (Markenstimmung & Share of Voice): ${compTxt}.`;
-  }, [agg, range, comp, liveSignals]);
+Aktive Signale: ${signalTxt}.`;
+  }, [agg, range, liveSignals]);
 
   const exportReport = useMemo(
-    () => buildExportReport({ agg, comp, liveSignals, range, title, view }),
-    [agg, comp, liveSignals, range, title, view],
+    () => buildExportReport({ agg, liveSignals, range, title, view }),
+    [agg, liveSignals, range, title, view],
   );
 
   const exportCSV = () => {
     if (!agg || !exportReport) return;
     let rows = [];
     let fileName = `nordzucker_mentions_${range}t.csv`;
-    if (view==="comp"){
-      if (!comp) return;
-      rows = comp.names.map(n=>({ Hersteller:n.name, NettoStimmung:comp.series[comp.series.length-1]?.[n.id] ?? 0, ShareOfVoice_Pct:n.sov }));
-      fileName = "nordzucker_wettbewerb.csv";
-    } else if (view==="bi"){
+    if (view==="bi"){
       rows = biMentions.map(m=>(
         { Datum:m.date.toISOString().slice(0,10), Quartal:m.quarter, Region:m.region, Produkt:m.product,
           Quelle:m.source, Thema:m.topicLabel, BusinessImpact:m.sentiment, BusinessLabel:m.sentimentLabel,
@@ -2375,7 +2246,6 @@ Wettbewerb (Markenstimmung & Share of Voice): ${compTxt}.`;
               {view==="dashboard" && <Dashboard agg={agg} range={range} signals={liveSignals}/>}
               {view==="trends"    && <Trends mentions={mentions} range={range} signals={liveSignals} appSettings={appSettings} topicCatalog={topicCatalog}/>}
               {view==="bi"        && <BICube mentions={biMentions}/>}
-              {view==="comp"      && <Competition onExport={exportCSV} comp={comp}/>}
               {view==="recs"      && <Recommendations dataSummary={dataSummary}/>}
               {view==="chat"      && <Assistant dataSummary={dataSummary}/>}
               {view==="sources"   && <Sources sourceHealth={sourceHealth} appSettings={appSettings} onSaveSettings={handleSaveSettings}/>} 

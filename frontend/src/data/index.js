@@ -1,6 +1,6 @@
 // Schaltet automatisch zwischen Demo-Daten und Supabase-Backend um.
 // Live-Modus aktiv, sobald VITE_SUPABASE_URL gesetzt ist.
-import { mockMentions } from "./mock";
+import { mockMentions, SOURCE_INFO } from "./mock";
 
 const HAS_LIVE_CONFIG = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
 let backendReachable = HAS_LIVE_CONFIG;
