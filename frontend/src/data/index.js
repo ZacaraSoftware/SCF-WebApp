@@ -1,6 +1,6 @@
 // Schaltet automatisch zwischen Demo-Daten und Supabase-Backend um.
 // Live-Modus aktiv, sobald VITE_SUPABASE_URL gesetzt ist.
-import { mockMentions, SOURCE_INFO } from "./mock";
+import { mockMentions } from "./mock";
 
 const HAS_LIVE_CONFIG = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
 let backendReachable = HAS_LIVE_CONFIG;
@@ -8,26 +8,6 @@ const backendStatusListeners = new Set();
 
 export const LIVE = HAS_LIVE_CONFIG;
 export { SOURCES, TOPICS, ANCHOR, DAYMS, SOURCE_INFO } from "./mock";
-
-function mockCompetitors() {
-  const names = [
-    { id: "nordzucker", name: "Nordzucker", color: "#004b93", sov: 31 },
-    { id: "suedzucker", name: "Suedzucker", color: "#8a6d3b", sov: 28 },
-    { id: "dzm", name: "DZM", color: "#16a37b", sov: 22 },
-    { id: "cosun", name: "Cosun", color: "#6d5ce7", sov: 19 },
-  ];
-
-  const series = [
-    { week: "KW1", nordzucker: 8, suedzucker: 11, dzm: 4, cosun: 2 },
-    { week: "KW2", nordzucker: 12, suedzucker: 10, dzm: 6, cosun: 5 },
-    { week: "KW3", nordzucker: 9, suedzucker: 13, dzm: 7, cosun: 6 },
-    { week: "KW4", nordzucker: 14, suedzucker: 12, dzm: 8, cosun: 7 },
-    { week: "KW5", nordzucker: 16, suedzucker: 14, dzm: 9, cosun: 8 },
-    { week: "KW6", nordzucker: 15, suedzucker: 13, dzm: 10, cosun: 9 },
-  ];
-
-  return { names, series };
-}
 
 export class BackendOffline extends Error {
   constructor(){ super("BACKEND_OFFLINE"); this.name = "BackendOffline"; }
@@ -120,13 +100,6 @@ export async function loadSourceHealth(range = 90){
       volume: 0,
     }));
   });
-}
-
-export async function loadCompetitors(){
-  return withLiveFallback(async () => {
-    const { supabaseComp } = await import("./supabase");
-    return supabaseComp();
-  }, () => mockCompetitors());
 }
 
 export async function loadAppSettings(){
