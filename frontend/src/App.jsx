@@ -9,7 +9,7 @@ import {
   LayoutDashboard, TrendingUp, Lightbulb, MessageSquare, Plug,
   Download, FileText, AlertTriangle, ArrowUpRight, ArrowDownRight,
   Sparkles, Menu, X, Sun, ShieldAlert, Activity, CheckCircle2,
-  Send, Loader2, Database, Minus,
+  Send, Loader2, Database, Minus, Info,
 } from "lucide-react";
 import {
   loadMentions, loadSourceHealth, aiChat, aiRecommendations, aiConversationHistory, aiConversationMessages,
@@ -251,6 +251,17 @@ const STYLE = `
 .card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px}
 .card-t{font-size:13.5px;font-weight:600;color:var(--ink);font-family:'Space Grotesk'}
 .card-s{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+details.info-wrap{position:relative;display:inline-flex}
+details.info-wrap > summary{list-style:none}
+details.info-wrap > summary::-webkit-details-marker{display:none}
+.info-btn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:999px;
+  border:1px solid var(--line);color:var(--ink-3);background:#fff;cursor:pointer;transition:.14s;vertical-align:middle}
+.info-btn:hover{color:var(--nz-700);border-color:var(--nz-500)}
+.info-pop{position:absolute;top:calc(100% + 8px);right:0;z-index:40;width:min(320px,78vw);background:#fff;
+  border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-l);padding:10px 12px}
+details.info-wrap.left .info-pop{left:0;right:auto}
+.info-pop .t{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin-bottom:4px}
+.info-pop p{margin:0;font-size:12px;line-height:1.5;color:var(--ink-2)}
 .kpi .lab{font-size:12px;color:var(--ink-2);font-weight:500;display:flex;align-items:center;gap:7px}
 .kpi .val{font-family:'Space Grotesk';font-weight:600;font-size:30px;line-height:1.1;margin:9px 0 6px}
 .delta{display:inline-flex;align-items:center;gap:3px;font-size:11.5px;font-weight:600;
@@ -994,6 +1005,17 @@ const Delta = ({ v, suffix="" }) => {
   const Ico = v>0?ArrowUpRight:v<0?ArrowDownRight:Minus;
   return <span className={`delta ${cls}`}><Ico size={12}/>{(v>0?"+":"")+v}{suffix}</span>;
 };
+const InfoHint = ({ title, text, align = "right" }) => (
+  <details className={`info-wrap ${align === "left" ? "left" : ""}`}>
+    <summary className="info-btn" aria-label={`Info zu ${title}`} title={`Info zu ${title}`}>
+      <Info size={13} />
+    </summary>
+    <div className="info-pop">
+      <div className="t">Info</div>
+      <p>{text}</p>
+    </div>
+  </details>
+);
 
 /* =========================  DASHBOARD  ========================= */
 function Dashboard({ agg, range, signals }){
@@ -1015,7 +1037,9 @@ function Dashboard({ agg, range, signals }){
       <div className="grid g-kpi4" style={{marginBottom:16}}>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><Activity size={14}/> Geschäftsauswirkung</span>
+            <span className="lab"><Activity size={14}/> Geschäftsauswirkung
+              <InfoHint title="Geschäftsauswirkung" text="Skala von -100 bis +100. Positive Werte zeigen voraussichtlich günstige Wirkung auf Nachfrage/Absatz, negative Werte deuten auf Geschäftsrisiken hin. Wichtiger als ein Einzelwert ist die Richtung über mehrere Tage." />
+            </span>
             <span className="kpi-ico" style={{background:"var(--nz-100)",color:"var(--nz-700)"}}><Activity size={17}/></span>
           </div>
           <div className="val" style={{color:sentColor(agg.curNet/100)}}>{agg.curNet>0?"+":""}{agg.curNet}</div>
@@ -1023,7 +1047,9 @@ function Dashboard({ agg, range, signals }){
         </div>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><MessageSquare size={14}/> Erwähnungen</span>
+            <span className="lab"><MessageSquare size={14}/> Erwähnungen
+              <InfoHint title="Erwähnungen" text="Zeigt die Datenmenge im gewählten Zeitraum. Mehr Volumen erhöht die Aussagekraft, starkes Plus/Minus kann aber auch nur durch einzelne Quellen oder Events entstehen." />
+            </span>
             <span className="kpi-ico" style={{background:"var(--nz-100)",color:"var(--nz-700)"}}><MessageSquare size={16}/></span>
           </div>
           <div className="val">{agg.curVol.toLocaleString("de-DE")}</div>
@@ -1031,7 +1057,9 @@ function Dashboard({ agg, range, signals }){
         </div>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><CheckCircle2 size={14}/> Geschäftlich positiv</span>
+            <span className="lab"><CheckCircle2 size={14}/> Geschäftlich positiv
+              <InfoHint title="Geschäftlich positiv" text="Anteil der Beiträge mit klar positivem Business-Impact. Hohe Werte zeigen Chancenpotenzial, aber nur in Kombination mit ausreichendem Volumen und stabiler Trendlinie." />
+            </span>
             <span className="kpi-ico" style={{background:"var(--pos-bg)",color:"var(--pos)"}}><CheckCircle2 size={16}/></span>
           </div>
           <div className="val">{agg.posShare}%</div>
@@ -1039,7 +1067,9 @@ function Dashboard({ agg, range, signals }){
         </div>
         <div className="card kpi">
           <div className="mobile-stack">
-            <span className="lab"><ShieldAlert size={14}/> Aktive Signale</span>
+            <span className="lab"><ShieldAlert size={14}/> Aktive Signale
+              <InfoHint title="Aktive Signale" text="Anzahl automatisch erkannter Risiko-, Chancen- oder Beobachtungssignale. Viele Signale bedeuten nicht automatisch Krise, sondern eher höheren Steuerungsbedarf." />
+            </span>
             <span className="kpi-ico" style={{background:"var(--neg-bg)",color:"var(--neg)"}}><ShieldAlert size={16}/></span>
           </div>
           <div className="val">{signals.length}</div>
@@ -1052,7 +1082,9 @@ function Dashboard({ agg, range, signals }){
       {/* trend + source */}
       <div className="grid g-split-2-1" style={{marginBottom:16}}>
         <div className="card">
-          <div className="card-h"><div><div className="card-t">Stimmungsverlauf</div>
+          <div className="card-h"><div><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Stimmungsverlauf</div>
+            <InfoHint title="Stimmungsverlauf" text="Die Kurve zeigt den täglichen Business-Impact. Wichtiger als einzelne Ausreißer ist, ob sich ein Trend über mehrere Tage ober- oder unterhalb der Nulllinie stabilisiert." />
+          </div>
             <div className="card-s">Täglicher Nordzucker-Impact über {range} Tage</div></div></div>
           <ResponsiveContainer width="100%" height={230}>
             <AreaChart data={agg.series} margin={{top:5,right:6,left:-18,bottom:0}}>
@@ -1072,7 +1104,9 @@ function Dashboard({ agg, range, signals }){
           </ResponsiveContainer>
         </div>
         <div className="card">
-          <div className="card-h"><div className="card-t">Quellen-Mix</div></div>
+          <div className="card-h"><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Quellen-Mix</div>
+            <InfoHint title="Quellen-Mix" text="Zeigt, aus welchen Kanälen die Daten stammen. Ein sehr einseitiger Mix kann Interpretationen verzerren; robuste Trends sollten in mehreren Quellen sichtbar sein." />
+          </div></div>
           <ResponsiveContainer width="100%" height={170}>
             <PieChart>
               <Pie data={sourcePie} dataKey="value" nameKey="name" innerRadius={42} outerRadius={66} paddingAngle={2}>
@@ -1095,7 +1129,9 @@ function Dashboard({ agg, range, signals }){
       {/* topic sentiment + signals */}
       <div className="grid g-split-1-1" style={{marginBottom:16}}>
         <div className="card">
-          <div className="card-h"><div><div className="card-t">Geschäftsauswirkung nach Thema</div>
+          <div className="card-h"><div><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Geschäftsauswirkung nach Thema</div>
+            <InfoHint title="Geschäftsauswirkung nach Thema" text="Vergleicht Themencluster nach ihrer mutmaßlichen Wirkung auf Nordzucker. Priorität haben Themen mit stark negativem Wert und gleichzeitig hohem Volumen." />
+          </div>
             <div className="card-s">Nordzucker-Impact je Themencluster</div></div></div>
           {agg.byTopic.slice(0,7).map(t=>{
             const w = Math.abs(t.net); 
@@ -1110,7 +1146,9 @@ function Dashboard({ agg, range, signals }){
           })}
         </div>
         <div className="card">
-          <div className="card-h"><div className="card-t">Signale & Risiken</div></div>
+          <div className="card-h"><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Signale & Risiken</div>
+            <InfoHint title="Signale und Risiken" text="Automatisch erkannte Auffälligkeiten auf Basis von Volumen, Trend und Impact. Nutze sie als Frühwarnsystem, validiere kritische Signale aber immer mit Detaildaten." />
+          </div></div>
           {signals.length === 0 ? (
             <div className="empty" style={{padding:"22px 12px"}}>
               <AlertTriangle size={20} style={{color:"var(--ink-3)"}}/>
