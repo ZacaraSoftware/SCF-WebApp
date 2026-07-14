@@ -137,10 +137,10 @@ export async function saveAppSettings(entries, adminSecret){
   });
 }
 
-export async function aiChat(messages){
+export async function aiChat(payload){
   return runLiveOnly(async () => {
     const { ragChat } = await import("./supabase");
-    return ragChat(messages);
+    return ragChat(payload);
   });
 }
 

@@ -12,7 +12,7 @@ import {
   Send, Loader2, Database, Minus,
 } from "lucide-react";
 import {
-  loadMentions, loadSourceHealth, aiChat, aiRecommendations,
+  loadMentions, loadSourceHealth, aiChat, aiRecommendations, aiConversationHistory, aiConversationMessages,
   LIVE, SOURCES, TOPICS, ANCHOR, DAYMS, SOURCE_INFO, loadAppSettings, saveAppSettings, loadYoutubeTermStats,
 } from "./data";
 import { YoutubeQuotaWidget } from "./YoutubeQuotaWidget";
@@ -1321,16 +1321,78 @@ function Recommendations({ dataSummary }){
 }
 
 /* =========================  KI-ASSISTENT (chat)  ========================= */
+const ASSISTANT_SESSION_KEY = "scf_ai_session_id";
+
+function getAssistantSessionId(){
+  if (typeof window === "undefined") return "session-server";
+  const existing = window.localStorage.getItem(ASSISTANT_SESSION_KEY);
+  if (existing) return existing;
+  const generated = window.crypto?.randomUUID?.() ?? `session-${Date.now()}`;
+  window.localStorage.setItem(ASSISTANT_SESSION_KEY, generated);
+  return generated;
+}
+
 function Assistant({ dataSummary }){
   const [log, setLog] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [input, setInput] = useState(""); const [busy, setBusy] = useState(false);
+  const [sessionId] = useState(() => getAssistantSessionId());
   const endRef = useRef(null);
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth"}); }, [log, busy]);
+
+  const refreshHistory = async () => {
+    if (!LIVE) {
+      setHistory([]);
+      return;
+    }
+    try {
+      const rows = await aiConversationHistory(sessionId, 20);
+      setHistory(rows);
+    } catch {
+      setHistory([]);
+    }
+  };
+
+  useEffect(() => {
+    refreshHistory();
+  }, [sessionId]);
+
   const suggestions = [
     "Welche Themen sind aktuell das größte Risiko für unser B2B-Geschäft?",
     "Wie steht Nordzucker im Stimmungsvergleich zu Südzucker?",
     "Was treibt die saisonalen Trends gerade an?",
   ];
+
+  const startNewConversation = () => {
+    setConversationId(null);
+    setLog([]);
+    setInput("");
+  };
+
+  const openConversation = async (id) => {
+    if (!id || !LIVE || historyBusy || busy) return;
+    setHistoryBusy(true);
+    try {
+      const data = await aiConversationMessages(sessionId, id, 160);
+      const msgs = Array.isArray(data?.messages)
+        ? data.messages
+          .filter((m) => m?.role === "user" || m?.role === "assistant")
+          .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
+        : [];
+      setConversationId(id);
+      setLog(msgs);
+    } catch {
+      setLog((prev) => [...prev, {
+        role: "assistant",
+        content: "Verlauf konnte nicht geladen werden. Bitte erneut versuchen.",
+      }]);
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
   const send = async (q) => {
     const text = (q ?? input).trim(); if (!text || busy) return;
     const next = [...log, { role:"user", content:text }];
@@ -1340,15 +1402,47 @@ function Assistant({ dataSummary }){
       setBusy(false); return;
     }
     try {
-      const msgs = next.map(m=>({ role:m.role, content:m.content }));
-      const ans = await aiChat(msgs);
-      setLog([...next, { role:"assistant", content:ans }]);
+      const response = await aiChat({
+        session_id: sessionId,
+        conversation_id: conversationId,
+        messages: next.map((m) => ({ role: m.role, content: m.content })),
+        question: text,
+        days: 3650,
+      });
+      const nextConversationId = response?.conversation_id ?? conversationId;
+      if (nextConversationId) setConversationId(nextConversationId);
+      setLog([...next, { role:"assistant", content:String(response?.answer ?? "") }]);
+      refreshHistory();
     } catch(e){
       setLog([...next, { role:"assistant", content:"Die KI-Schnittstelle ist gerade nicht erreichbar. Prüfe, ob die ai-query Edge Function deployed und der Anthropic-Key als Secret gesetzt ist." }]);
     } finally { setBusy(false); }
   };
   return (
     <div className="card chat-wrap">
+      <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
+        <button className="btn" onClick={startNewConversation} disabled={busy || historyBusy}>Neue Unterhaltung</button>
+        <select
+          value={conversationId ?? ""}
+          onChange={(e) => openConversation(e.target.value)}
+          disabled={!LIVE || busy || historyBusy || history.length === 0}
+          style={{
+            minWidth: 260,
+            border: "1px solid var(--line)",
+            borderRadius: 10,
+            padding: "8px 10px",
+            color: "var(--ink)",
+            background: "#fff",
+          }}
+        >
+          <option value="">{history.length === 0 ? "Kein Verlauf" : "Verlauf auswählen"}</option>
+          {history.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.title || "Neue Unterhaltung"}
+            </option>
+          ))}
+        </select>
+        {historyBusy && <span style={{fontSize:12,color:"var(--ink-3)"}}>Lade Verlauf...</span>}
+      </div>
       {log.length===0 ? (
         <div className="empty" style={{flex:1,justifyContent:"center"}}>
           <MessageSquare size={30} style={{color:"var(--nz-500)"}}/>

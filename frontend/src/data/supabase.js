@@ -113,14 +113,32 @@ export async function supabaseComp(){
   return { names, series };
 }
 
-export async function ragChat(messages, days){
-  const body = { mode: "chat", messages };
-  if (Number.isFinite(days) && days > 0) body.days = days;
+export async function ragChat(payload, days){
+  const body = Array.isArray(payload)
+    ? { mode: "chat", messages: payload }
+    : { mode: "chat", ...(payload ?? {}) };
+  if (Number.isFinite(days) && days > 0 && !Number.isFinite(body.days)) body.days = days;
   const { data, error } = await client().functions.invoke("ai-query", {
     body,
   });
   if (error) throw error;
-  return data.answer;
+  return data;
+}
+
+export async function ragConversationHistory(sessionId, limit = 20){
+  const { data, error } = await client().functions.invoke("ai-query", {
+    body: { mode: "history_list", session_id: sessionId, limit },
+  });
+  if (error) throw error;
+  return data?.conversations ?? [];
+}
+
+export async function ragConversationMessages(sessionId, conversationId, limit = 120){
+  const { data, error } = await client().functions.invoke("ai-query", {
+    body: { mode: "history_get", session_id: sessionId, conversation_id: conversationId, limit },
+  });
+  if (error) throw error;
+  return data;
 }
 
 export async function ragRecommendations(summary, days){
