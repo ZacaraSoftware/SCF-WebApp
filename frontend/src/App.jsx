@@ -1480,7 +1480,12 @@ function Assistant({ dataSummary }){
       setLog([...next, { role:"assistant", content:String(response?.answer ?? "") }]);
       refreshHistory();
     } catch(e){
-      setLog([...next, { role:"assistant", content:"Die KI-Schnittstelle ist gerade nicht erreichbar. Prüfe, ob die ai-query Edge Function deployed und der Anthropic-Key als Secret gesetzt ist." }]);
+      const message = String(e?.message ?? e ?? "").trim();
+      const fallback = "Die KI-Schnittstelle ist gerade nicht erreichbar.";
+      setLog([...next, {
+        role:"assistant",
+        content: message ? `${fallback} ${message}` : `${fallback} Prüfe, ob die ai-query Edge Function deployed und ANTHROPIC_API_KEY gesetzt ist.`,
+      }]);
     } finally { setBusy(false); }
   };
   return (

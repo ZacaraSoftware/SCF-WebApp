@@ -28,6 +28,49 @@ function topicLabelFromId(topicId){
     .replace(/\b\w/g, (c) => c.toUpperCase()) || "Unbekannt";
 }
 
+async function invokeAiQuery(body){
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error("Supabase-Konfiguration fehlt: VITE_SUPABASE_URL oder VITE_SUPABASE_ANON_KEY ist nicht gesetzt.");
+  }
+
+  const { data: sessionData } = await client().auth.getSession();
+  const accessToken = sessionData?.session?.access_token ?? supabaseAnonKey;
+
+  const response = await fetch(`${supabaseUrl.replace(/\/$/, "")}/functions/v1/ai-query`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: supabaseAnonKey,
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const responseText = await response.text();
+  let parsedBody = null;
+  if (responseText) {
+    try {
+      parsedBody = JSON.parse(responseText);
+    } catch {
+      parsedBody = responseText;
+    }
+  }
+
+  if (!response.ok) {
+    const details = typeof parsedBody === "object" && parsedBody !== null
+      ? String(parsedBody.error ?? parsedBody.message ?? responseText)
+      : String(parsedBody ?? responseText);
+    const error = new Error(details || `ai-query failed with status ${response.status}`);
+    error.status = response.status;
+    error.details = parsedBody;
+    throw error;
+  }
+
+  return parsedBody;
+}
+
 export async function supabaseMentions(rangeDays = 60){
   const since = new Date(Date.now() - rangeDays * DAYMS).toISOString();
   const rowLimit = maxRowsForRange(rangeDays);
@@ -118,37 +161,22 @@ export async function ragChat(payload, days){
     ? { mode: "chat", messages: payload }
     : { mode: "chat", ...(payload ?? {}) };
   if (Number.isFinite(days) && days > 0 && !Number.isFinite(body.days)) body.days = days;
-  const { data, error } = await client().functions.invoke("ai-query", {
-    body,
-  });
-  if (error) throw error;
-  return data;
+  return invokeAiQuery(body);
 }
 
 export async function ragConversationHistory(sessionId, limit = 20){
-  const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "history_list", session_id: sessionId, limit },
-  });
-  if (error) throw error;
+  const data = await invokeAiQuery({ mode: "history_list", session_id: sessionId, limit });
   return data?.conversations ?? [];
 }
 
 export async function ragConversationMessages(sessionId, conversationId, limit = 120){
-  const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "history_get", session_id: sessionId, conversation_id: conversationId, limit },
-  });
-  if (error) throw error;
-  return data;
+  return invokeAiQuery({ mode: "history_get", session_id: sessionId, conversation_id: conversationId, limit });
 }
 
 export async function ragRecommendations(summary, days){
   const body = { mode: "recommendations", summary };
   if (Number.isFinite(days) && days > 0) body.days = days;
-  const { data, error } = await client().functions.invoke("ai-query", {
-    body,
-  });
-  if (error) throw error;
-  return data;
+  return invokeAiQuery(body);
 }
 
 export async function supabaseSourceHealth(rangeDays = 30){
