@@ -14,6 +14,119 @@ type MentionRow = {
   content: string;
 };
 
+type EnrichUpdateRow = {
+  id: string;
+  topic: string;
+  impact_reason: string;
+  public_sentiment_label: string;
+  business_impact_label: string;
+  analysis_confidence: number;
+  enrichment_status: "done" | "failed";
+};
+
+type QualityMetrics = {
+  sampleSize: number;
+  avgConfidence: number;
+  lowConfidenceShare: number;
+  unknownTopicShare: number;
+  unknownReasonShare: number;
+  labelDisagreementShare: number;
+};
+
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function computeQualityMetrics(rows: Array<Partial<EnrichUpdateRow>>): QualityMetrics {
+  const sampleSize = rows.length;
+  if (sampleSize === 0) {
+    return {
+      sampleSize: 0,
+      avgConfidence: 0,
+      lowConfidenceShare: 0,
+      unknownTopicShare: 0,
+      unknownReasonShare: 0,
+      labelDisagreementShare: 0,
+    };
+  }
+
+  let confidenceSum = 0;
+  let lowConfidence = 0;
+  let unknownTopic = 0;
+  let unknownReason = 0;
+  let labelDisagreement = 0;
+
+  for (const row of rows) {
+    const confidence = Number(row.analysis_confidence ?? 0);
+    confidenceSum += confidence;
+    if (confidence < 0.45) lowConfidence += 1;
+
+    const topic = String(row.topic ?? "").toLowerCase();
+    if (!topic || topic === "unknown") unknownTopic += 1;
+
+    const reason = String(row.impact_reason ?? "").toLowerCase();
+    if (!reason || reason === "unknown") unknownReason += 1;
+
+    const publicLabel = String(row.public_sentiment_label ?? "").toLowerCase();
+    const businessLabel = String(row.business_impact_label ?? "").toLowerCase();
+    if (publicLabel && businessLabel && publicLabel !== businessLabel) labelDisagreement += 1;
+  }
+
+  return {
+    sampleSize,
+    avgConfidence: round3(confidenceSum / sampleSize),
+    lowConfidenceShare: round3(lowConfidence / sampleSize),
+    unknownTopicShare: round3(unknownTopic / sampleSize),
+    unknownReasonShare: round3(unknownReason / sampleSize),
+    labelDisagreementShare: round3(labelDisagreement / sampleSize),
+  };
+}
+
+async function loadBaselineMetrics(db: ReturnType<typeof serviceClient>): Promise<QualityMetrics> {
+  const since = new Date(Date.now() - 14 * 86400000).toISOString();
+  const { data, error } = await db
+    .from("mentions")
+    .select("topic, impact_reason, public_sentiment_label, business_impact_label, analysis_confidence")
+    .eq("enrichment_status", "done")
+    .gte("enriched_at", since)
+    .order("enriched_at", { ascending: false })
+    .limit(3000);
+
+  if (error) throw error;
+  return computeQualityMetrics((data ?? []) as Array<Partial<EnrichUpdateRow>>);
+}
+
+function evaluateQuality(current: QualityMetrics, baseline: QualityMetrics) {
+  const deltas = {
+    avgConfidence: round3(current.avgConfidence - baseline.avgConfidence),
+    lowConfidenceShare: round3(current.lowConfidenceShare - baseline.lowConfidenceShare),
+    unknownTopicShare: round3(current.unknownTopicShare - baseline.unknownTopicShare),
+    unknownReasonShare: round3(current.unknownReasonShare - baseline.unknownReasonShare),
+  };
+
+  const findings: string[] = [];
+  let severity: "ok" | "warn" | "critical" = "ok";
+
+  if (current.sampleSize >= 12 && deltas.avgConfidence <= -0.08) {
+    findings.push("avg_confidence_drop");
+    severity = "warn";
+  }
+  if (current.sampleSize >= 12 && deltas.lowConfidenceShare >= 0.12) {
+    findings.push("low_confidence_spike");
+    severity = severity === "ok" ? "warn" : severity;
+  }
+  if (current.sampleSize >= 12 && current.unknownTopicShare >= 0.20) {
+    findings.push("unknown_topic_high");
+    severity = "critical";
+  }
+  if (current.sampleSize >= 12 && current.unknownReasonShare >= 0.25) {
+    findings.push("unknown_reason_high");
+    severity = "critical";
+  }
+
+  return { severity, findings, deltas };
+}
+
 async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
   if (items.length === 0) return [];
   const results = new Array<R>(items.length);
@@ -86,6 +199,7 @@ Deno.serve(async (req) => {
     let done = 0;
     let failed = 0;
     const errors: string[] = [];
+    const doneRowsForQuality: EnrichUpdateRow[] = [];
 
     for (let i = 0; i < claimed.length; i += ENRICH_BATCH_SIZE) {
       const batch = claimed.slice(i, i + ENRICH_BATCH_SIZE);
@@ -193,7 +307,42 @@ Deno.serve(async (req) => {
         }
         if (row.enrichment_status === "done") done += 1;
         else failed += 1;
+
+        if (row.enrichment_status === "done") {
+          doneRowsForQuality.push({
+            id,
+            topic: String(row.topic ?? "unknown"),
+            impact_reason: String(row.impact_reason ?? "unknown"),
+            public_sentiment_label: String(row.public_sentiment_label ?? "neutral"),
+            business_impact_label: String(row.business_impact_label ?? "neutral"),
+            analysis_confidence: Number(row.analysis_confidence ?? 0),
+            enrichment_status: "done",
+          });
+        }
       }
+    }
+
+    let qualityAudit: Record<string, unknown> | null = null;
+    try {
+      const currentMetrics = computeQualityMetrics(doneRowsForQuality);
+      const baselineMetrics = await loadBaselineMetrics(db);
+      const evaluated = evaluateQuality(currentMetrics, baselineMetrics);
+
+      qualityAudit = {
+        current: currentMetrics,
+        baseline14d: baselineMetrics,
+        deltas: evaluated.deltas,
+        severity: evaluated.severity,
+        findings: evaluated.findings,
+      };
+
+      await db.from("ai_runs").insert({
+        kind: "enrich_qc",
+        prompt: `processed=${claimed.length};done=${done};failed=${failed}`,
+        response: qualityAudit,
+      });
+    } catch (e) {
+      errors.push(`quality_audit:${String((e as Error)?.message ?? e)}`);
     }
 
     return json({
@@ -201,6 +350,7 @@ Deno.serve(async (req) => {
       done,
       failed,
       errors: errors.slice(0, 8),
+      qualityAudit,
     }, 200, req);
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500, req);
