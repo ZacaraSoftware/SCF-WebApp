@@ -1217,7 +1217,9 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
       </p>
       <div className="grid g-split-2-1" style={{marginBottom:16}}>
         <div className="card">
-          <div className="card-h"><div><div className="card-t">Themen-Volumen im Zeitverlauf</div>
+          <div className="card-h"><div><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Themen-Volumen im Zeitverlauf</div>
+            <InfoHint title="Themen-Volumen" text="Zeigt die Anzahl Erwähnungen pro Tag. Ein steigendes Volumen ohne Impact-Verbesserung kann auf wachsende Diskussion bei gleichbleibendem Risiko hindeuten." />
+          </div>
             <div className="card-s">Erwähnungen je Tag, ausgewählte Cluster</div></div></div>
           <ResponsiveContainer width="100%" height={250}>
             <LineChart data={series} margin={{top:5,right:8,left:-20,bottom:0}}>
@@ -1234,7 +1236,9 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
           </div>
         </div>
         <div className="card">
-          <div className="card-h"><div><div className="card-t">Momentum</div>
+          <div className="card-h"><div><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Momentum</div>
+            <InfoHint title="Momentum" text="Prozentuale Veränderung gegenüber der Vorperiode. Hohe Prozentwerte bei sehr kleinem Basisvolumen können überzeichnet sein, deshalb immer mit absoluten Werten lesen." />
+          </div>
             <div className="card-s">Volumen ggü. Vorperiode</div></div></div>
           <div style={{display:"flex",flexDirection:"column",gap:3}}>
             {mom.slice(0,7).map(t=>(
@@ -1248,7 +1252,9 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
         </div>
       </div>
       <div className="card">
-        <div className="card-h"><div className="card-t">Risiko- & Chancen-Register</div></div>
+        <div className="card-h"><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Risiko- & Chancen-Register</div>
+          <InfoHint title="Risiko- und Chancen-Register" text="Kondensiert relevante Signale in priorisierte Felder. Fokus zuerst auf hohe Risiken mit klarer Handlungsempfehlung und kurzer Zeitschiene." />
+        </div></div>
         {risks.length === 0 ? (
           <div className="empty" style={{padding:"22px 12px"}}>
             <AlertTriangle size={20} style={{color:"var(--ink-3)"}}/>
@@ -1981,22 +1987,30 @@ function BICube({ mentions }) {
 
       <div className="grid g-3" style={{ marginBottom: 16 }}>
         <div className="card kpi">
-          <div className="lab"><Activity size={14} /> Geschäftsauswirkung (gefiltert)</div>
+          <div className="lab"><Activity size={14} /> Geschäftsauswirkung (gefiltert)
+            <InfoHint title="Geschäftsauswirkung (gefiltert)" text="Impact nur für den aktuell gesetzten Cube-Slice. Damit lassen sich regionale oder produktspezifische Chancen und Risiken gezielt isolieren." />
+          </div>
           <div className="val" style={{ color: sentColor(cubeData.net / 100) }}>{cubeData.net > 0 ? "+" : ""}{cubeData.net}</div>
         </div>
         <div className="card kpi">
-          <div className="lab"><MessageSquare size={14} /> Beobachtungen</div>
+          <div className="lab"><MessageSquare size={14} /> Beobachtungen
+            <InfoHint title="Beobachtungen" text="Anzahl Datensätze im aktiven Filter. Bei kleinem Volumen sind Aussagen eher indikativ; bei großem Volumen deutlich belastbarer." />
+          </div>
           <div className="val">{cubeData.count.toLocaleString("de-DE")}</div>
         </div>
         <div className="card kpi">
-          <div className="lab"><CheckCircle2 size={14} /> Geschäftlich positiv</div>
+          <div className="lab"><CheckCircle2 size={14} /> Geschäftlich positiv
+            <InfoHint title="Geschäftlich positiv (Cube)" text="Prozent positiver Impacts im gefilterten Ausschnitt. Ein hoher Wert bei kleinem Datenvolumen sollte immer gegen mehrere Filterkombinationen gegengeprüft werden." />
+          </div>
           <div className="val">{cubeData.posShare}%</div>
         </div>
       </div>
 
       <div className="grid g-split-12-1" style={{ marginBottom: 16 }}>
         <div className="card">
-          <div className="card-h"><div><div className="card-t">Cube-Ansicht (Top-Kombinationen)</div><div className="card-s">Quartal × Region × Produkt</div></div></div>
+          <div className="card-h"><div><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Cube-Ansicht (Top-Kombinationen)</div>
+            <InfoHint title="Cube-Ansicht" text="Zeigt die stärksten Kombinationen aus Quartal, Region und Produkt. Nutze sie, um Hotspots mit hohem Volumen und gleichzeitig negativem Netto-Wert schnell zu priorisieren." />
+          </div><div className="card-s">Quartal × Region × Produkt</div></div></div>
           <div className="tbl-shell tbl-scroll">
           <table className="tbl tbl-wide">
             <thead>
@@ -2019,7 +2033,9 @@ function BICube({ mentions }) {
         </div>
 
         <div className="card">
-          <div className="card-h"><div><div className="card-t">Top Produktkategorien</div><div className="card-s">Volumen + Sentiment</div></div></div>
+          <div className="card-h"><div><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Top Produktkategorien</div>
+            <InfoHint title="Top Produktkategorien" text="Balken zeigen Volumen je Produktkategorie. Für Business-Entscheidungen immer zusammen mit Impact-Wert aus Tabelle/Cube lesen, nicht nur nach Menge priorisieren." />
+          </div><div className="card-s">Volumen + Sentiment</div></div></div>
           <ResponsiveContainer width="100%" height={250}>
             <BarChart data={cubeData.topProducts} margin={{ top: 5, right: 8, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false} />
@@ -2033,7 +2049,9 @@ function BICube({ mentions }) {
       </div>
 
       <div className="card">
-        <div className="card-h"><div><div className="card-t">Heatmap-Snapshot</div><div className="card-s">Stärkste Quartal × Produkt-Zellen</div></div></div>
+        <div className="card-h"><div><div style={{display:"flex",alignItems:"center",gap:6}}><div className="card-t">Heatmap-Snapshot</div>
+          <InfoHint title="Heatmap-Snapshot" text="Schneller Blick auf volumenstarke Zellen. Eine hohe Balkenfüllung bedeutet viele Erwähnungen, nicht automatisch positiven Impact." />
+        </div><div className="card-s">Stärkste Quartal × Produkt-Zellen</div></div></div>
         <div className="cube-heat">
           {cubeData.heatCells.map((cell, idx) => (
             <div className="cube-cell" key={`${cell.quarter}-${cell.product}`} style={{animationDelay:`${40 + idx * 35}ms`}}>
