@@ -113,17 +113,21 @@ export async function supabaseComp(){
   return { names, series };
 }
 
-export async function ragChat(messages){
+export async function ragChat(messages, days){
+  const body = { mode: "chat", messages };
+  if (Number.isFinite(days) && days > 0) body.days = days;
   const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "chat", messages },
+    body,
   });
   if (error) throw error;
   return data.answer;
 }
 
-export async function ragRecommendations(summary){
+export async function ragRecommendations(summary, days){
+  const body = { mode: "recommendations", summary };
+  if (Number.isFinite(days) && days > 0) body.days = days;
   const { data, error } = await client().functions.invoke("ai-query", {
-    body: { mode: "recommendations", summary },
+    body,
   });
   if (error) throw error;
   return data;

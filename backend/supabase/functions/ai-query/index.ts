@@ -6,14 +6,15 @@ import { callClaude } from "../_shared/llm.ts";
 
 // RAG-Endpunkt. Hält den Anthropic-Key serverseitig.
 // Body:
-//   { mode: "chat",            messages: [{role,content}], days?: number }
-//   { mode: "recommendations", summary: string,           days?: number }
+//   { mode: "chat",            messages: [{role,content}], days?: number|null }
+//   { mode: "recommendations", summary: string,           days?: number|null }
+// Ohne gültiges days-Feld wird der gesamte verfügbare Datenbestand genutzt.
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200, req);
 
   try {
-    const { mode, messages, question, summary, days = 90 } = await req.json();
+    const { mode, messages, question, summary, days } = await req.json();
     const safeMode = mode === "recommendations" ? "recommendations" : "chat";
     const normalizedMessages = Array.isArray(messages) && messages.length > 0
       ? messages
@@ -26,7 +27,12 @@ Deno.serve(async (req) => {
     }
 
     const db = serviceClient();
-    const since = new Date(Date.now() - days * 86400000).toISOString();
+    const numericDays = Number(days);
+    const hasDayWindow = Number.isFinite(numericDays) && numericDays > 0;
+    const since = hasDayWindow
+      ? new Date(Date.now() - numericDays * 86400000).toISOString()
+      : "1970-01-01T00:00:00.000Z";
+    const windowLabel = hasDayWindow ? `letzte ${Math.round(numericDays)} Tage` : "gesamter Datenbestand";
 
     // Retrieval-Query bestimmen
     const query =
@@ -38,7 +44,7 @@ Deno.serve(async (req) => {
     const qvec = await embed(query);
     const { data: hits } = await db.rpc("match_mentions", {
       query_embedding: qvec,
-      match_count: 10,
+      match_count: 20,
       since,
     });
 
@@ -56,7 +62,7 @@ Deno.serve(async (req) => {
         "Schema forecasts: topic (string), direction (steigend|fallend|stabil), confidence (hoch|mittel|niedrig), statement (string). " +
         "Max 4 recommendations, max 3 forecasts.";
       const user =
-        `Kennzahlen und Datenlage (letzte ${days} Tage):\n${summary ?? "(keine)"}\n\n` +
+        `Kennzahlen und Datenlage (${windowLabel}):\n${summary ?? "(keine)"}\n\n` +
         `Relevante Belege aus den Daten:\n${context}\n\n` +
         "Leite konkrete Handlungsempfehlungen und Prognosen strikt aus Sicht von Nordzucker ab. " +
         "Gewichte business_impact hoeher als public_sentiment. Positive Stimmung fuer zuckerfreie Alternativen ist fuer Nordzucker nicht automatisch positiv. " +

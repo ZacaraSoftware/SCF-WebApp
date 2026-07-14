@@ -513,6 +513,17 @@ const signed = (n) => `${n > 0 ? "+" : ""}${n}`;
 const priorityRank = { Hoch: 3, Mittel: 2, Niedrig: 1 };
 const clampScore = (n) => Math.max(0, Math.min(100, Math.round(n)));
 
+function ceilToNextTen(n) {
+  return Math.ceil(Math.abs(n) / 10) * 10;
+}
+
+function buildSymmetricDomain(series, key) {
+  const values = (series ?? []).map((row) => Number(row?.[key] ?? 0)).filter((v) => Number.isFinite(v));
+  const peak = Math.max(10, ...values.map((v) => Math.abs(v)));
+  const bound = ceilToNextTen(peak);
+  return [-bound, bound];
+}
+
 function buildExportReport({ agg, liveSignals, range, title, view }) {
   if (!agg) return null;
 
@@ -992,6 +1003,7 @@ function Dashboard({ agg, range, signals }){
   }, {});
   const sourcePie = agg.bySource.map(s => ({ name:s.label, value:s.vol }));
   const PIECOL = ["#004b93","#0a6cd4","#6cbf4b","#6d5ce7"];
+  const impactDomain = useMemo(() => buildSymmetricDomain(agg.series, "net"), [agg.series]);
   return (
     <>
       <p className="lede" style={{marginBottom:20}}>
@@ -1052,7 +1064,7 @@ function Dashboard({ agg, range, signals }){
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false}/>
               <XAxis dataKey="day" tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false} interval="preserveStartEnd" minTickGap={24}/>
-              <YAxis tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false} domain={[-100,100]}/>
+              <YAxis tick={{fontSize:11,fill:"#8694a8"}} axisLine={false} tickLine={false} domain={impactDomain}/>
               <ReferenceLine y={0} stroke="#e4eaf2" />
               <Tooltip content={<ChartTip/>}/>
               <Area type="monotone" dataKey="net" name="Geschäftsauswirkung" stroke="#0a5cb8" strokeWidth={2.4} fill="url(#gPos)"/>
@@ -1141,9 +1153,10 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
   const topicById = Object.fromEntries(topicCatalog.map((t) => [t.id, t]));
   const focus = configuredFocus.filter((id) => topicById[id]);
   const buckets = Math.min(range, 30);
+  const todayStartTs = new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate()).getTime();
   const series = [];
-  for (let d=buckets-1; d>=0; d--){
-    const day = new Date(NOW.getTime()-d*DAYMS); const lo=day.getTime(), hi=lo+DAYMS;
+  for (let d = buckets; d >= 1; d--){
+    const day = new Date(todayStartTs - d * DAYMS); const lo = day.getTime(), hi = lo + DAYMS;
     const row = { day: dateLabel(day) };
     focus.forEach(f=>{ row[f]=mentions.filter(m=>m.topic===f && m.ts>=lo && m.ts<hi).length; });
     series.push(row);
