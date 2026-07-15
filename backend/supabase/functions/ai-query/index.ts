@@ -7,6 +7,7 @@ import { callClaude } from "../_shared/llm.ts";
 type ChatRole = "user" | "assistant";
 type ChatMessage = { role: ChatRole; content: string };
 type MentionHit = {
+  id?: string;
   content: string;
   source: string;
   source_context: string | null;
@@ -129,6 +130,41 @@ function formatTopComments(rows: MentionHit[]): string {
   });
 
   return [intro, "", ...items].join("\n\n");
+}
+
+function buildEvidenceList(rows: MentionHit[], limit = 3): string {
+  const items = rows.slice(0, limit).map((row, index) => {
+    const author = row.author ? `${row.author} · ` : "";
+    const context = row.source_context ? ` · ${compactText(row.source_context, 90)}` : "";
+    const url = row.url ? ` · ${row.url}` : "";
+    return `- [${index + 1}] ${author}${row.source}${context}: "${compactText(row.content, 180)}"${url}`;
+  });
+  return items.length ? `\n\nQuellenbasis:\n${items.join("\n")}` : "";
+}
+
+function citationDetail(hit: MentionHit, index: number) {
+  return {
+    ref: index + 1,
+    source: hit.source,
+    author: hit.author,
+    url: hit.url,
+    source_context: hit.source_context,
+    excerpt: compactText(hit.content, 180),
+    business_impact: hit.business_impact,
+    business_impact_label: hit.business_impact_label,
+    public_sentiment: hit.public_sentiment,
+    public_sentiment_label: hit.public_sentiment_label,
+    impact_reason: hit.impact_reason,
+    published_at: hit.published_at,
+  };
+}
+
+function resolveCitations(refs: unknown, hitRows: MentionHit[]) {
+  if (!Array.isArray(refs)) return [];
+  return refs
+    .map((ref) => Number(ref))
+    .filter((ref) => Number.isInteger(ref) && ref >= 1 && ref <= hitRows.length)
+    .map((ref) => citationDetail(hitRows[ref - 1], ref - 1));
 }
 
 function defaultMemory(row?: Partial<ConversationRow>): MemoryEnvelope {
@@ -355,10 +391,11 @@ Deno.serve(async (req) => {
       const system =
         "Du bist Senior Market-Intelligence-Analyst bei Nordzucker AG. " +
         "WICHTIG: Antworte NUR mit einem JSON-Objekt. Kein Markdown, keine Erklärung, keine Codeblöcke. " +
-        'Nur das JSON im Format: {"recommendations":[...],"forecasts":[...]}. ' +
-        "Schema recommendations: title (string), rationale (string), priority (hoch|mittel|niedrig), horizon (string). " +
-        "Schema forecasts: topic (string), direction (steigend|fallend|stabil), confidence (hoch|mittel|niedrig), statement (string). " +
-        "Max 4 recommendations, max 3 forecasts.";
+        'Nur das JSON im Format: {"recommendations":[...],"forecasts":[...],"actions":[...]}. ' +
+        "Schema recommendations: title (string), rationale (string), priority (hoch|mittel|niedrig), horizon (string), confidence (hoch|mittel|niedrig), citations (number[]). " +
+        "Schema forecasts: topic (string), direction (steigend|fallend|stabil), confidence (hoch|mittel|niedrig), statement (string), citations (number[]). " +
+        "Schema actions: title (string), owner (string), horizon (string), steps (string), confidence (hoch|mittel|niedrig), citations (number[]). " +
+        "Citations muessen sich auf die nummerierten Belege [1]...[N] beziehen. Max 4 recommendations, max 3 forecasts, max 3 actions.";
       const user =
         `Kennzahlen und Datenlage (letzte ${days} Tage):\n${summary ?? "(keine)"}\n\n` +
         `Relevante Belege aus den Daten:\n${context}\n\n` +
@@ -383,9 +420,35 @@ Deno.serve(async (req) => {
         if (!parsed.forecasts || !Array.isArray(parsed.forecasts)) {
           throw new Error("Missing or invalid 'forecasts' array");
         }
-        
-        await db.from("ai_runs").insert({ kind: "recommendations", prompt: user, response: parsed });
-        return json(parsed, 200, req);
+        const recommendations = parsed.recommendations.map((item: any) => ({
+          title: String(item?.title ?? "").trim(),
+          rationale: String(item?.rationale ?? "").trim(),
+          priority: String(item?.priority ?? "mittel").trim(),
+          horizon: String(item?.horizon ?? "").trim(),
+          confidence: String(item?.confidence ?? "mittel").trim(),
+          citations: resolveCitations(item?.citations, hitRows),
+        }));
+        const forecasts = parsed.forecasts.map((item: any) => ({
+          topic: String(item?.topic ?? "").trim(),
+          direction: String(item?.direction ?? "stabil").trim(),
+          confidence: String(item?.confidence ?? "mittel").trim(),
+          statement: String(item?.statement ?? "").trim(),
+          citations: resolveCitations(item?.citations, hitRows),
+        }));
+        const actions = Array.isArray(parsed.actions)
+          ? parsed.actions.map((item: any) => ({
+            title: String(item?.title ?? "").trim(),
+            owner: String(item?.owner ?? "Steering Committee").trim(),
+            horizon: String(item?.horizon ?? "").trim(),
+            steps: String(item?.steps ?? "").trim(),
+            confidence: String(item?.confidence ?? "mittel").trim(),
+            citations: resolveCitations(item?.citations, hitRows),
+          }))
+          : [];
+        const response = { recommendations, forecasts, actions };
+
+        await db.from("ai_runs").insert({ kind: "recommendations", prompt: user, response });
+        return json(response, 200, req);
       } catch (parseErr) {
         const errMsg = (parseErr as Error).message || String(parseErr);
         console.error("Recommendations JSON parsing failed:", errMsg);
@@ -500,10 +563,12 @@ Deno.serve(async (req) => {
       "Antworte prägnant und geschäftlich auf Deutsch. Interpretiere alles strikt aus Sicht von Nordzucker und seiner Produkte. " +
       "Behandle public_sentiment und Nordzucker-Impact getrennt; fuer Managementaussagen ist Nordzucker-Impact vorrangig. " +
       `Du hast Zugriff auf den Vollkorpus aller aggregierten Kommentare (aktuell ${Number(corpusCount ?? 0)} Eintraege). ` +
+      "Beziehe dich nur auf die gelieferten Belege und nenne keine erfundenen Quellen. " +
       "Nutze den Gespraechsverlauf und das Gedaechtnis konsequent fuer Rueckschluesse, Empfehlungen und Entscheidungen.\n\n" +
       `Gedaechtnis:\n${memoryBlock}\n\n` +
       `Relevante Belege aus den Daten:\n${context}`;
-    const answer = await callClaude(chatMessages, system, 800);
+    const answerRaw = await callClaude(chatMessages, system, 800);
+    const answer = `${answerRaw.trim()}${buildEvidenceList(hitRows, 3)}`;
 
     await db.from("ai_messages").insert([
       {
@@ -537,13 +602,19 @@ Deno.serve(async (req) => {
     await db.from("ai_runs").insert({
       kind: "chat",
       prompt: latestQuestion,
-      response: { answer, conversation_id: conversation.id, corpus_count: Number(corpusCount ?? 0) },
+      response: {
+        answer,
+        conversation_id: conversation.id,
+        corpus_count: Number(corpusCount ?? 0),
+        citations: hitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
+      },
     });
     return json({
       answer,
       conversation_id: conversation.id,
       memory: updatedMemory,
       corpus_count: Number(corpusCount ?? 0),
+      citations: hitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
     }, 200, req);
   } catch (e) {
     return json({ error: String((e as Error).message ?? e) }, 500, req);

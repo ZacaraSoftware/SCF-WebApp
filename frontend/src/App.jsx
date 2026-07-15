@@ -1306,7 +1306,7 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
 /* =========================  EMPFEHLUNGEN & PROGNOSEN (AI)  ========================= */
 function Recommendations({ dataSummary }){
   const [state, setState] = useState("idle"); // idle|loading|done|error
-  const [recs, setRecs] = useState([]); const [fc, setFc] = useState([]); const [err, setErr] = useState("");
+  const [recs, setRecs] = useState([]); const [fc, setFc] = useState([]); const [actions, setActions] = useState([]); const [err, setErr] = useState("");
   const run = async () => {
     if (!LIVE){
       setErr("Demo-Modus aktiv. Verbinde das Supabase-Backend (VITE_SUPABASE_URL in der .env), um echte KI-Empfehlungen aus den Live-Daten zu generieren.");
@@ -1315,11 +1315,19 @@ function Recommendations({ dataSummary }){
     setState("loading"); setErr("");
     try {
       const parsed = await aiRecommendations(dataSummary);
-      setRecs(parsed.recommendations||[]); setFc(parsed.forecasts||[]); setState("done");
+      setRecs(parsed.recommendations||[]); setFc(parsed.forecasts||[]); setActions(parsed.actions||[]); setState("done");
     } catch(e){ setErr(String(e.message||e)); setState("error"); }
   };
   const pCol = p => p==="hoch"?"var(--neg)":p==="mittel"?"var(--neu)":"var(--ink-3)";
   const dIco = d => d==="steigend"?ArrowUpRight:d==="fallend"?ArrowDownRight:Minus;
+  const renderCitations = (citations=[]) => citations.length ? (
+    <div style={{marginTop:8,fontSize:11.5,color:"var(--ink-3)",display:"grid",gap:4}}>
+      <b>Belege</b>
+      {citations.map((c, i) => (
+        <div key={i}>[{c.ref}] {c.source}{c.author ? ` · ${c.author}` : ""}: "{c.excerpt}"</div>
+      ))}
+    </div>
+  ) : null;
   return (
     <>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,marginBottom:20,flexWrap:"wrap"}}>
@@ -1359,7 +1367,8 @@ function Recommendations({ dataSummary }){
                     <span className="prio" style={{color:pCol(r.priority),background:pCol(r.priority)+"1a",flex:"none"}}>{r.priority}</span>
                   </div>
                   <p>{r.rationale}</p>
-                  <p style={{marginTop:6,color:"var(--ink-3)",fontSize:11.5}}><b>Horizont:</b> {r.horizon}</p>
+                  <p style={{marginTop:6,color:"var(--ink-3)",fontSize:11.5}}><b>Horizont:</b> {r.horizon} · <b>Konfidenz:</b> {r.confidence}</p>
+                  {renderCitations(r.citations)}
                 </div>
               ))}
             </div>
@@ -1376,8 +1385,26 @@ function Recommendations({ dataSummary }){
                   </div>
                   <p>{f.statement}</p>
                   <p style={{marginTop:6,color:"var(--ink-3)",fontSize:11.5}}><b>Richtung:</b> {f.direction} · <b>Konfidenz:</b> {f.confidence}</p>
+                  {renderCitations(f.citations)}
                 </div>
               );})}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-h"><div className="card-t">Commercial Actions</div></div>
+            <div style={{display:"flex",flexDirection:"column",gap:11}}>
+              {actions.map((a,i)=>(
+                <div className="ai-card" key={i} style={{borderLeftColor:"var(--pos)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"start"}}>
+                    <h4>{a.title}</h4>
+                    <span className="prio" style={{color:"var(--pos)",background:"var(--pos-bg)",flex:"none"}}>{a.confidence}</span>
+                  </div>
+                  <p>{a.steps}</p>
+                  <p style={{marginTop:6,color:"var(--ink-3)",fontSize:11.5}}><b>Owner:</b> {a.owner} · <b>Horizont:</b> {a.horizon}</p>
+                  {renderCitations(a.citations)}
+                </div>
+              ))}
+              {actions.length===0 && <div style={{fontSize:12.5,color:"var(--ink-3)"}}>Keine Maßnahmenvorschläge zurückgegeben.</div>}
             </div>
           </div>
         </div>
