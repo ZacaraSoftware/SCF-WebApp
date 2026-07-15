@@ -174,9 +174,10 @@ export async function ragConversationMessages(sessionId, conversationId, limit =
   return invokeAiQuery({ mode: "history_get", session_id: sessionId, conversation_id: conversationId, limit });
 }
 
-export async function ragRecommendations(summary, days){
+export async function ragRecommendations(summary, days, effort){
   const body = { mode: "recommendations", summary };
   if (Number.isFinite(days) && days > 0) body.days = days;
+  if (effort) body.effort = effort;
   return invokeAiQuery(body);
 }
 

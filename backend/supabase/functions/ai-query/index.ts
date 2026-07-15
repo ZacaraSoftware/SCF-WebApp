@@ -6,6 +6,7 @@ import { callClaude } from "../_shared/llm.ts";
 
 type ChatRole = "user" | "assistant";
 type ChatMessage = { role: ChatRole; content: string };
+type AiEffort = "low" | "medium" | "high";
 type MentionHit = {
   id?: string;
   content: string;
@@ -48,6 +49,13 @@ const MEMORY_DECISION_LIMIT = 6;
 const DEFAULT_CHAT_DAYS = 3650;
 const DEFAULT_HISTORY_LIMIT = 20;
 const DEFAULT_MESSAGE_LIMIT = 120;
+const HIGH_SCAN_PAGE_SIZE = 500;
+const HIGH_SCAN_CHUNK_SIZE = 40;
+
+const RETRIEVAL_LIMITS = {
+  low: { chat: 40, recommendations: 24, topComments: 120 },
+  medium: { chat: 120, recommendations: 72, topComments: 360 },
+} as const;
 
 function sanitizeMessage(message: unknown): ChatMessage | null {
   const role = (message as ChatMessage | undefined)?.role;
@@ -68,6 +76,12 @@ function parseDays(input: unknown, fallback: number): number {
   const value = Number(input);
   if (!Number.isFinite(value) || value <= 0) return fallback;
   return Math.max(1, Math.min(3650, Math.floor(value)));
+}
+
+function parseAiEffort(input: unknown): AiEffort {
+  const value = String(input ?? "").trim().toLowerCase();
+  if (value === "medium" || value === "high") return value;
+  return "low";
 }
 
 function deriveTitle(text: string): string {
@@ -165,6 +179,65 @@ function resolveCitations(refs: unknown, hitRows: MentionHit[]) {
     .map((ref) => Number(ref))
     .filter((ref) => Number.isInteger(ref) && ref >= 1 && ref <= hitRows.length)
     .map((ref) => citationDetail(hitRows[ref - 1], ref - 1));
+}
+
+async function loadAllMentionsForHighScan(
+  db: ReturnType<typeof serviceClient>,
+  since: string,
+): Promise<MentionHit[]> {
+  const rows: MentionHit[] = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + HIGH_SCAN_PAGE_SIZE - 1;
+    const { data, error } = await db
+      .from("mentions")
+      .select("id, content, source, source_context, author, url, like_count, reply_count, topic, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, published_at")
+      .eq("enrichment_status", "done")
+      .gte("published_at", since)
+      .order("published_at", { ascending: false })
+      .range(from, to);
+
+    if (error) throw error;
+    const batch = (data ?? []).map((row: any) => ({
+      ...row,
+      similarity: 0,
+      rrf_score: 0,
+    })) as MentionHit[];
+
+    rows.push(...batch);
+    if (batch.length < HIGH_SCAN_PAGE_SIZE) break;
+    from += HIGH_SCAN_PAGE_SIZE;
+  }
+
+  return rows;
+}
+
+function formatChunkForScan(rows: MentionHit[]): string {
+  return rows.map((row, index) => {
+    const author = row.author ? `, ${row.author}` : "";
+    return `[${index + 1}] (${row.source}${author}, ${row.topic}, Public ${row.public_sentiment_label}, Impact ${row.business_impact_label}, Grund ${row.impact_reason}) ${compactText(row.content, 200)}`;
+  }).join("\n");
+}
+
+async function buildHighEffortCorpusScan(query: string, rows: MentionHit[]): Promise<string> {
+  if (rows.length === 0) return "Kein Vollkorpus-Scan moeglich: keine angereicherten Mentions im Zeitraum.";
+
+  const chunkSummaries: string[] = [];
+  for (let start = 0; start < rows.length; start += HIGH_SCAN_CHUNK_SIZE) {
+    const chunk = rows.slice(start, start + HIGH_SCAN_CHUNK_SIZE);
+    const system =
+      "Du analysierst einen Chunk aus einem Vollkorpus fuer Nordzucker. " +
+      "Bewerte NUR mit Blick auf die Nutzerfrage. " +
+      "Antworte knapp auf Deutsch mit exakt 3 Spiegelstrichen: wichtigstes Risiko/Chance, auffaelliges Muster, Relevanz fuer Nordzucker.";
+    const user =
+      `Nutzerfrage:\n${query}\n\n` +
+      `Chunk ${Math.floor(start / HIGH_SCAN_CHUNK_SIZE) + 1} von ${Math.ceil(rows.length / HIGH_SCAN_CHUNK_SIZE)} mit ${chunk.length} Mentions:\n${formatChunkForScan(chunk)}`;
+    const summary = await callClaude([{ role: "user", content: user }], system, 220);
+    chunkSummaries.push(`Chunk ${Math.floor(start / HIGH_SCAN_CHUNK_SIZE) + 1}:\n${summary.trim()}`);
+  }
+
+  return `Vollkorpus-Scan ueber ${rows.length} Eintraege:\n\n${chunkSummaries.join("\n\n")}`;
 }
 
 function defaultMemory(row?: Partial<ConversationRow>): MemoryEnvelope {
@@ -352,6 +425,7 @@ Deno.serve(async (req) => {
     }
 
     const days = parseDays(body?.days, DEFAULT_CHAT_DAYS);
+    const effort = parseAiEffort(body?.effort);
     const since = new Date(Date.now() - days * 86400000).toISOString();
 
     // Retrieval-Query bestimmen
@@ -365,13 +439,18 @@ Deno.serve(async (req) => {
         : "Risiken, Chancen und Stimmungstrends rund um Zucker, Softdrinks und süße Speisen";
 
     const topCommentMode = safeMode === "chat" && isTopCommentQuestion(query);
+    const retrievalLimit = topCommentMode
+      ? RETRIEVAL_LIMITS[effort === "high" ? "medium" : effort].topComments
+      : safeMode === "recommendations"
+        ? RETRIEVAL_LIMITS[effort === "high" ? "medium" : effort].recommendations
+        : RETRIEVAL_LIMITS[effort === "high" ? "medium" : effort].chat;
 
     // Top-k relevante Mentions per Vektor-Ähnlichkeit holen
     const qvec = await embed(query);
     const { data: hits } = await db.rpc("match_mentions", {
       query_embedding: qvec,
       query_text: query,
-      match_count: topCommentMode ? 120 : safeMode === "recommendations" ? 24 : 40,
+      match_count: retrievalLimit,
       since,
     });
 
@@ -381,6 +460,9 @@ Deno.serve(async (req) => {
       .eq("enrichment_status", "done");
 
     const hitRows = (hits ?? []) as MentionHit[];
+    const highEffortScan = effort === "high"
+      ? await buildHighEffortCorpusScan(query, await loadAllMentionsForHighScan(db, since))
+      : "";
 
     const context = hitRows
       .map((h: any, i: number) =>
@@ -398,6 +480,7 @@ Deno.serve(async (req) => {
         "Citations muessen sich auf die nummerierten Belege [1]...[N] beziehen. Max 4 recommendations, max 3 forecasts, max 3 actions.";
       const user =
         `Kennzahlen und Datenlage (letzte ${days} Tage):\n${summary ?? "(keine)"}\n\n` +
+        (highEffortScan ? `${highEffortScan}\n\n` : "") +
         `Relevante Belege aus den Daten:\n${context}\n\n` +
         "Leite konkrete Handlungsempfehlungen und Prognosen strikt aus Sicht von Nordzucker ab. " +
         "Gewichte business_impact hoeher als public_sentiment. Positive Stimmung fuer zuckerfreie Alternativen ist fuer Nordzucker nicht automatisch positiv. " +
@@ -448,7 +531,7 @@ Deno.serve(async (req) => {
         const response = { recommendations, forecasts, actions };
 
         await db.from("ai_runs").insert({ kind: "recommendations", prompt: user, response });
-        return json(response, 200, req);
+          return json({ ...response, effort }, 200, req);
       } catch (parseErr) {
         const errMsg = (parseErr as Error).message || String(parseErr);
         console.error("Recommendations JSON parsing failed:", errMsg);
@@ -566,6 +649,7 @@ Deno.serve(async (req) => {
       "Beziehe dich nur auf die gelieferten Belege und nenne keine erfundenen Quellen. " +
       "Nutze den Gespraechsverlauf und das Gedaechtnis konsequent fuer Rueckschluesse, Empfehlungen und Entscheidungen.\n\n" +
       `Gedaechtnis:\n${memoryBlock}\n\n` +
+      (highEffortScan ? `${highEffortScan}\n\n` : "") +
       `Relevante Belege aus den Daten:\n${context}`;
     const answerRaw = await callClaude(chatMessages, system, 800);
     const answer = `${answerRaw.trim()}${buildEvidenceList(hitRows, 3)}`;
@@ -607,6 +691,7 @@ Deno.serve(async (req) => {
         conversation_id: conversation.id,
         corpus_count: Number(corpusCount ?? 0),
         citations: hitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
+        effort,
       },
     });
     return json({
@@ -615,6 +700,7 @@ Deno.serve(async (req) => {
       memory: updatedMemory,
       corpus_count: Number(corpusCount ?? 0),
       citations: hitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
+      effort,
     }, 200, req);
   } catch (e) {
     return json({ error: String((e as Error).message ?? e) }, 500, req);

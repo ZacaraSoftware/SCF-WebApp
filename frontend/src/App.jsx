@@ -1304,7 +1304,7 @@ function Trends({ mentions, range, signals, appSettings, topicCatalog }){
 }
 
 /* =========================  EMPFEHLUNGEN & PROGNOSEN (AI)  ========================= */
-function Recommendations({ dataSummary }){
+function Recommendations({ dataSummary, aiEffort }){
   const [state, setState] = useState("idle"); // idle|loading|done|error
   const [recs, setRecs] = useState([]); const [fc, setFc] = useState([]); const [actions, setActions] = useState([]); const [err, setErr] = useState("");
   const run = async () => {
@@ -1314,7 +1314,7 @@ function Recommendations({ dataSummary }){
     }
     setState("loading"); setErr("");
     try {
-      const parsed = await aiRecommendations(dataSummary);
+      const parsed = await aiRecommendations(dataSummary, aiEffort);
       setRecs(parsed.recommendations||[]); setFc(parsed.forecasts||[]); setActions(parsed.actions||[]); setState("done");
     } catch(e){ setErr(String(e.message||e)); setState("error"); }
   };
@@ -1425,7 +1425,7 @@ function getAssistantSessionId(){
   return generated;
 }
 
-function Assistant({ dataSummary }){
+function Assistant({ dataSummary, aiEffort }){
   const [log, setLog] = useState([]);
   const [history, setHistory] = useState([]);
   const [conversationId, setConversationId] = useState(null);
@@ -1501,6 +1501,7 @@ function Assistant({ dataSummary }){
         messages: next.map((m) => ({ role: m.role, content: m.content })),
         question: text,
         days: 3650,
+        effort: aiEffort,
       });
       const nextConversationId = response?.conversation_id ?? conversationId;
       if (nextConversationId) setConversationId(nextConversationId);
@@ -2137,18 +2138,32 @@ const TITLES = {
   chat:["Analyse","KI-Assistent"], sources:["System","Datenquellen & Schnittstellen"],
 };
 
+const AI_EFFORT_OPTIONS = [
+  { value: "low", label: "Niedrig", hint: "kostensparend" },
+  { value: "medium", label: "Mittel", hint: "kosteneffizient" },
+  { value: "high", label: "Hoch", hint: "kostenintensiver" },
+];
+
 export default function App(){
   const CACHE_KEY = "scf_mentions_cache_v1";
   const CACHE_TTL_MS = 5 * 60 * 1000;
   const [view, setView] = useState("dashboard");
   const [range, setRange] = useState(7);
   const [open, setOpen] = useState(false);
+  const [aiEffort, setAiEffort] = useState(() => {
+    if (typeof window === "undefined") return "low";
+    return window.localStorage.getItem("scf_ai_effort") || "low";
+  });
   const [mentions, setMentions] = useState([]);
   const [sourceHealth, setSourceHealth] = useState([]);
   const [appSettings, setAppSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [sec, title] = TITLES[view];
+
+  useEffect(() => {
+    if (typeof window !== "undefined") window.localStorage.setItem("scf_ai_effort", aiEffort);
+  }, [aiEffort]);
 
   useEffect(()=>{ (async()=>{
     setLoading(true);
@@ -2335,6 +2350,20 @@ Aktive Signale: ${signalTxt}.`;
               {[7,14,30,90].map(r=>(<button key={r} className={range===r?"on":""} onClick={()=>setRange(r)}>{r} Tage</button>))}
             </div>
           )}
+          {(view==="chat"||view==="recs") && (
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <span style={{fontSize:12,color:"var(--ink-3)",fontWeight:600}}>KI-Leistung</span>
+              <select
+                value={aiEffort}
+                onChange={(e)=>setAiEffort(e.target.value)}
+                style={{border:"1px solid var(--line)",borderRadius:10,padding:"8px 10px",background:"#fff",color:"var(--ink)"}}
+              >
+                {AI_EFFORT_OPTIONS.map((option)=>(
+                  <option key={option.value} value={option.value}>{option.label} ({option.hint})</option>
+                ))}
+              </select>
+            </div>
+          )}
           {view!=="chat" && view!=="sources" && (
             <>
               <button className="btn" onClick={exportCSV}><FileText size={14}/> CSV</button>
@@ -2463,8 +2492,8 @@ Aktive Signale: ${signalTxt}.`;
               {view==="dashboard" && <Dashboard agg={agg} range={range} signals={liveSignals}/>}
               {view==="trends"    && <Trends mentions={mentions} range={range} signals={liveSignals} appSettings={appSettings} topicCatalog={topicCatalog}/>}
               {view==="bi"        && <BICube mentions={biMentions}/>}
-              {view==="recs"      && <Recommendations dataSummary={dataSummary}/>}
-              {view==="chat"      && <Assistant dataSummary={dataSummary}/>}
+              {view==="recs"      && <Recommendations dataSummary={dataSummary} aiEffort={aiEffort}/>}
+              {view==="chat"      && <Assistant dataSummary={dataSummary} aiEffort={aiEffort}/>}
               {view==="sources"   && <Sources sourceHealth={sourceHealth} appSettings={appSettings} onSaveSettings={handleSaveSettings}/>} 
             </>
           )}

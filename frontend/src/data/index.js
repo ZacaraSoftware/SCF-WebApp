@@ -158,9 +158,9 @@ export async function aiConversationMessages(sessionId, conversationId, limit = 
   });
 }
 
-export async function aiRecommendations(summary){
+export async function aiRecommendations(summary, effort){
   return runLiveOnly(async () => {
     const { ragRecommendations } = await import("./supabase");
-    return ragRecommendations(summary);
+    return ragRecommendations(summary, undefined, effort);
   });
 }
