@@ -2139,14 +2139,15 @@ const TITLES = {
 };
 
 const AI_EFFORT_OPTIONS = [
-  { value: "low", label: "Niedrig", hint: "kostensparend" },
-  { value: "medium", label: "Mittel", hint: "kosteneffizient" },
-  { value: "high", label: "Hoch", hint: "kostenintensiver" },
+  { value: "low", label: "Small G", hint: "kostensparend" },
+  { value: "medium", label: "Big G", hint: "kosteneffizient" },
+  { value: "high", label: "Top G", hint: "kostenintensiver" },
 ];
 
 export default function App(){
-  const CACHE_KEY = "scf_mentions_cache_v1";
+  const CACHE_KEY = "scf_mentions_cache_v2";
   const CACHE_TTL_MS = 5 * 60 * 1000;
+  const DATA_RANGE_DAYS = 90;
   const [view, setView] = useState("dashboard");
   const [range, setRange] = useState(7);
   const [open, setOpen] = useState(false);
@@ -2186,9 +2187,10 @@ export default function App(){
         }
       }
 
-      // Schneller Start: 30 Tage reichen für alle aktuellen Dashboard-Filter.
+      // Load the full supported analysis window once so all views derive counts
+      // from the same complete 90-day base without per-view truncation.
       const [data, sourceStatus, settings] = await Promise.all([
-        loadMentions(30),
+        loadMentions(DATA_RANGE_DAYS),
         loadSourceHealth(30).catch(() => []),
         loadAppSettings().catch(() => ({})),
       ]);

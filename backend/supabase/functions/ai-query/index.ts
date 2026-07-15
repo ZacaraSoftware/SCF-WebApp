@@ -50,7 +50,8 @@ const DEFAULT_CHAT_DAYS = 3650;
 const DEFAULT_HISTORY_LIMIT = 20;
 const DEFAULT_MESSAGE_LIMIT = 120;
 const HIGH_SCAN_PAGE_SIZE = 500;
-const HIGH_SCAN_CHUNK_SIZE = 40;
+const HIGH_SCAN_CHUNK_SIZE = 120;
+const HIGH_SCAN_CONCURRENCY = 4;
 
 const RETRIEVAL_LIMITS = {
   low: { chat: 40, recommendations: 24, topComments: 120 },
@@ -223,18 +224,30 @@ function formatChunkForScan(rows: MentionHit[]): string {
 async function buildHighEffortCorpusScan(query: string, rows: MentionHit[]): Promise<string> {
   if (rows.length === 0) return "Kein Vollkorpus-Scan moeglich: keine angereicherten Mentions im Zeitraum.";
 
-  const chunkSummaries: string[] = [];
+  const chunks = [];
   for (let start = 0; start < rows.length; start += HIGH_SCAN_CHUNK_SIZE) {
-    const chunk = rows.slice(start, start + HIGH_SCAN_CHUNK_SIZE);
-    const system =
-      "Du analysierst einen Chunk aus einem Vollkorpus fuer Nordzucker. " +
-      "Bewerte NUR mit Blick auf die Nutzerfrage. " +
-      "Antworte knapp auf Deutsch mit exakt 3 Spiegelstrichen: wichtigstes Risiko/Chance, auffaelliges Muster, Relevanz fuer Nordzucker.";
-    const user =
-      `Nutzerfrage:\n${query}\n\n` +
-      `Chunk ${Math.floor(start / HIGH_SCAN_CHUNK_SIZE) + 1} von ${Math.ceil(rows.length / HIGH_SCAN_CHUNK_SIZE)} mit ${chunk.length} Mentions:\n${formatChunkForScan(chunk)}`;
-    const summary = await callClaude([{ role: "user", content: user }], system, 220);
-    chunkSummaries.push(`Chunk ${Math.floor(start / HIGH_SCAN_CHUNK_SIZE) + 1}:\n${summary.trim()}`);
+    chunks.push(rows.slice(start, start + HIGH_SCAN_CHUNK_SIZE));
+  }
+
+  const chunkSummaries = new Array<string>(chunks.length);
+  for (let start = 0; start < chunks.length; start += HIGH_SCAN_CONCURRENCY) {
+    const slice = chunks.slice(start, start + HIGH_SCAN_CONCURRENCY);
+    const summaries = await Promise.all(slice.map(async (chunk, index) => {
+      const chunkIndex = start + index;
+      const system =
+        "Du analysierst einen Chunk aus einem Vollkorpus fuer Nordzucker. " +
+        "Bewerte NUR mit Blick auf die Nutzerfrage. " +
+        "Antworte knapp auf Deutsch mit exakt 3 Spiegelstrichen: wichtigstes Risiko/Chance, auffaelliges Muster, Relevanz fuer Nordzucker.";
+      const user =
+        `Nutzerfrage:\n${query}\n\n` +
+        `Chunk ${chunkIndex + 1} von ${chunks.length} mit ${chunk.length} Mentions:\n${formatChunkForScan(chunk)}`;
+      const summary = await callClaude([{ role: "user", content: user }], system, 220);
+      return { chunkIndex, summary: `Chunk ${chunkIndex + 1}:\n${summary.trim()}` };
+    }));
+
+    summaries.forEach(({ chunkIndex, summary }) => {
+      chunkSummaries[chunkIndex] = summary;
+    });
   }
 
   return `Vollkorpus-Scan ueber ${rows.length} Eintraege:\n\n${chunkSummaries.join("\n\n")}`;
