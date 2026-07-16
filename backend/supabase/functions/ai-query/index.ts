@@ -58,6 +58,41 @@ const RETRIEVAL_LIMITS = {
   medium: { chat: 120, recommendations: 72, topComments: 360 },
 } as const;
 
+const DOMAIN_KEYWORDS = [
+  "nordzucker", "zucker", "sugar", "zuckerfrei", "softdrink", "softdrinks", "cola",
+  "suess", "süß", "snack", "backen", "diabetes", "gesundheit", "preis", "preise",
+  "inflation", "steuer", "zuckersteuer", "nachhalt", "saisonal", "ruebe", "rübe",
+  "sirup", "haushaltszucker", "kristallzucker",
+];
+
+function includesDomainKeyword(text: string): boolean {
+  const haystack = text.toLowerCase();
+  return DOMAIN_KEYWORDS.some((keyword) => haystack.includes(keyword));
+}
+
+function isDomainQuery(query: string): boolean {
+  return includesDomainKeyword(query);
+}
+
+function isDomainRelevantHit(hit: MentionHit): boolean {
+  const combined = [
+    hit.topic,
+    hit.content,
+    hit.source_context ?? "",
+    hit.impact_reason,
+  ].join(" ");
+  return includesDomainKeyword(combined);
+}
+
+function noDataAnswer(query: string): string {
+  return [
+    "Dazu liegen im aktuellen Nordzucker-Datenbestand keine belastbaren Informationen vor.",
+    `Frage: \"${query}\"`,
+    "Ich antworte nur auf Basis der angebundenen API-Daten (keine externe Wissensnutzung).",
+    "Bitte stelle eine produkt- oder geschäftsrelevante Frage zu Zucker/Nordzucker.",
+  ].join("\n\n");
+}
+
 function sanitizeMessage(message: unknown): ChatMessage | null {
   const role = (message as ChatMessage | undefined)?.role;
   const content = String((message as ChatMessage | undefined)?.content ?? "").trim();
@@ -473,11 +508,32 @@ Deno.serve(async (req) => {
       .eq("enrichment_status", "done");
 
     const hitRows = (hits ?? []) as MentionHit[];
+    const relevantHitRows = hitRows.filter((hit) => isDomainRelevantHit(hit));
+
+    if (safeMode === "chat" && (!isDomainQuery(query) || relevantHitRows.length === 0)) {
+      const answer = noDataAnswer(query);
+      await db.from("ai_runs").insert({
+        kind: "chat",
+        prompt: query,
+        response: {
+          answer,
+          reason: !isDomainQuery(query) ? "query_out_of_scope" : "no_relevant_hits",
+          corpus_count: Number(corpusCount ?? 0),
+        },
+      });
+      return json({
+        answer,
+        corpus_count: Number(corpusCount ?? 0),
+        citations: [],
+        effort,
+      }, 200, req);
+    }
+
     const highEffortScan = effort === "high"
       ? await buildHighEffortCorpusScan(query, await loadAllMentionsForHighScan(db, since))
       : "";
 
-    const context = hitRows
+    const context = relevantHitRows
       .map((h: any, i: number) =>
         `[${i + 1}] (${h.source}, ${h.topic}, Public ${h.public_sentiment}, Nordzucker-Impact ${h.business_impact}, Grund ${h.impact_reason}) ${h.content}`)
       .join("\n");
@@ -593,7 +649,7 @@ Deno.serve(async (req) => {
     ].join("\n\n");
 
     if (topCommentMode) {
-      const ranked = hitRows
+      const ranked = relevantHitRows
         .slice()
         .sort((a, b) =>
           interactionScore(b) - interactionScore(a)
@@ -608,7 +664,7 @@ Deno.serve(async (req) => {
           conversation_id: conversation.id,
           role: "user",
           content: latestQuestion,
-          retrieval_hits: hitRows.length,
+          retrieval_hits: relevantHitRows.length,
         },
         {
           conversation_id: conversation.id,
@@ -658,6 +714,8 @@ Deno.serve(async (req) => {
       "Du bist der KI-Analyst der Smart-Customer-Feedback-Plattform von Nordzucker AG. " +
       "Antworte prägnant und geschäftlich auf Deutsch. Interpretiere alles strikt aus Sicht von Nordzucker und seiner Produkte. " +
       "Behandle public_sentiment und Nordzucker-Impact getrennt; fuer Managementaussagen ist Nordzucker-Impact vorrangig. " +
+      "Nutze AUSSCHLIESSLICH die gelieferten Belege als Faktenbasis. " +
+      "Wenn etwas nicht in den Belegen steht, sage klar, dass dazu keine belastbaren Daten vorliegen. " +
       `Du hast Zugriff auf den Vollkorpus aller aggregierten Kommentare (aktuell ${Number(corpusCount ?? 0)} Eintraege). ` +
       "Beziehe dich nur auf die gelieferten Belege und nenne keine erfundenen Quellen. " +
       "Nutze den Gespraechsverlauf und das Gedaechtnis konsequent fuer Rueckschluesse, Empfehlungen und Entscheidungen.\n\n" +
@@ -665,20 +723,20 @@ Deno.serve(async (req) => {
       (highEffortScan ? `${highEffortScan}\n\n` : "") +
       `Relevante Belege aus den Daten:\n${context}`;
     const answerRaw = await callClaude(chatMessages, system, 800);
-    const answer = `${answerRaw.trim()}${buildEvidenceList(hitRows, 3)}`;
+    const answer = `${answerRaw.trim()}${buildEvidenceList(relevantHitRows, 3)}`;
 
     await db.from("ai_messages").insert([
       {
         conversation_id: conversation.id,
         role: "user",
         content: latestQuestion,
-        retrieval_hits: (hits ?? []).length,
+        retrieval_hits: relevantHitRows.length,
       },
       {
         conversation_id: conversation.id,
         role: "assistant",
         content: answer,
-        retrieval_hits: (hits ?? []).length,
+        retrieval_hits: relevantHitRows.length,
       },
     ]);
 
@@ -703,7 +761,7 @@ Deno.serve(async (req) => {
         answer,
         conversation_id: conversation.id,
         corpus_count: Number(corpusCount ?? 0),
-        citations: hitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
+        citations: relevantHitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
         effort,
       },
     });
@@ -712,7 +770,7 @@ Deno.serve(async (req) => {
       conversation_id: conversation.id,
       memory: updatedMemory,
       corpus_count: Number(corpusCount ?? 0),
-      citations: hitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
+      citations: relevantHitRows.slice(0, 3).map((hit, index) => citationDetail(hit, index)),
       effort,
     }, 200, req);
   } catch (e) {
