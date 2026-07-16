@@ -12,13 +12,52 @@ function client(){
 }
 
 const DAYMS = 86400000;
+const PAGE_SIZE = 1000;
 
-function maxRowsForRange(rangeDays){
-  if (rangeDays <= 7) return 800;
-  if (rangeDays <= 14) return 1400;
-  if (rangeDays <= 30) return 2400;
-  if (rangeDays <= 90) return 5000;
-  return 5000;
+async function fetchAllMentionsSince(sinceIso){
+  const rows = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + PAGE_SIZE - 1;
+    const { data, error } = await client()
+      .from("mentions")
+      .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status")
+      .gte("published_at", sinceIso)
+      .eq("enrichment_status", "done")
+      .order("published_at", { ascending: false })
+      .range(from, to);
+
+    if (error) throw error;
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return rows;
+}
+
+async function fetchAllMentionSourcesSince(sinceIso){
+  const rows = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + PAGE_SIZE - 1;
+    const { data, error } = await client()
+      .from("mentions")
+      .select("source")
+      .gte("published_at", sinceIso)
+      .range(from, to);
+
+    if (error) throw error;
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return rows;
 }
 
 function topicLabelFromId(topicId){
@@ -74,16 +113,8 @@ async function invokeAiQuery(body){
 
 export async function supabaseMentions(rangeDays = 60){
   const since = new Date(Date.now() - rangeDays * DAYMS).toISOString();
-  const rowLimit = maxRowsForRange(rangeDays);
-  const { data, error } = await client()
-    .from("mentions")
-    .select("id, source, author, content, url, published_at, topic, sentiment, sentiment_label, public_sentiment, public_sentiment_label, business_impact, business_impact_label, impact_reason, is_b2b, enrichment_status")
-    .gte("published_at", since)
-    .eq("enrichment_status", "done")
-    .order("published_at", { ascending: false })
-    .limit(rowLimit);
-  if (error) throw error;
-  return (data ?? []).map((m) => {
+  const allRows = await fetchAllMentionsSince(since);
+  return allRows.map((m) => {
     const d = new Date(m.published_at);
     const businessImpact = Number(m.business_impact ?? m.sentiment ?? 0);
     const publicSentiment = Number(m.public_sentiment ?? m.sentiment ?? 0);
@@ -183,12 +214,11 @@ export async function ragRecommendations(summary, days, effort){
 
 export async function supabaseSourceHealth(rangeDays = 30){
   const since = new Date(Date.now() - rangeDays * DAYMS).toISOString();
-  const [{ data: sources, error: sourcesError }, { data: mentions, error: mentionsError }] = await Promise.all([
+  const [{ data: sources, error: sourcesError }, mentions] = await Promise.all([
     client().from("sources").select("id, label, status, last_sync").order("id", { ascending: true }),
-    client().from("mentions").select("source, published_at").gte("published_at", since).limit(10000),
+    fetchAllMentionSourcesSince(since),
   ]);
   if (sourcesError) throw sourcesError;
-  if (mentionsError) throw mentionsError;
 
   const volumeBySource = {};
   for (const row of mentions ?? []) volumeBySource[row.source] = (volumeBySource[row.source] ?? 0) + 1;
